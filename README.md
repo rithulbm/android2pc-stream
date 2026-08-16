@@ -22,8 +22,8 @@ The ready-to-use files are kept at the repository root:
 
 | Platform | Download | SHA-256 |
 |---|---|---|
-| Android | [LocalCameraSender.apk](./LocalCameraSender.apk) | `B438F950BF5640359C8C5821F018204F57D7EF98D6785E1E4BDF1A3295D88A4B` |
-| Windows / OBS | [LocalCameraReceiverSetup.exe](./LocalCameraReceiverSetup.exe) | `96DE78A5EDF1F8B9DE098F90CBE8355264D7653497EE467AA77BEECB8DDBBDE5` |
+| Android | [LocalCameraSender.apk](./LocalCameraSender.apk) | `023BE34575170155A25717FF8A63836410F0DF6313F863AD6667AB4984D45E4E` |
+| Windows / OBS | [LocalCameraReceiverSetup.exe](./LocalCameraReceiverSetup.exe) | `11C4298F3B2A9A396ED78742B493D87B1161CD3670D12952E9F68822B5A3B95D` |
 
 The APK is development-signed and the Windows installer is not Authenticode
 signed because no private production certificates are part of this public
@@ -32,8 +32,20 @@ the hash above before running either artifact.
 
 ## Quick start
 
+### Instant Launch (via npx / npm)
+Run directly without manual download:
+```bash
+npx local-camera-receiver
+```
+Or install globally:
+```bash
+npm install -g local-camera-receiver
+local-camera-receiver
+```
+
+### Manual Setup
 1. Install or update **OBS Studio 32.2.1 x64** on Windows 10 or 11.
-2. Run `LocalCameraReceiverSetup.exe` and keep the Private-network firewall task selected.
+2. Run `LocalCameraReceiverSetup.exe` (or use `npx local-camera-receiver`) and keep the Private-network firewall task selected.
 3. In OBS, choose **Sources + → Local Camera Receiver**.
 4. Open that source's properties and choose **Show pairing QR**.
 5. Install and open `LocalCameraSender.apk` on Android 10 or newer, then scan

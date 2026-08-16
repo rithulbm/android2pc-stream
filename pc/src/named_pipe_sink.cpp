@@ -4,6 +4,8 @@
 #include <sddl.h>
 
 #include <array>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 namespace lcr {
@@ -121,7 +123,7 @@ void NamedPipeSink::run() noexcept
         }
         const HANDLE handle = CreateNamedPipeW(
             pipe_name_.c_str(),
-            PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_ACCESS_OUTBOUND,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             1024U * 1024U,
@@ -129,8 +131,10 @@ void NamedPipeSink::run() noexcept
             0,
             &security.attributes);
         if (handle == INVALID_HANDLE_VALUE) {
-            running_.store(false);
-            break;
+            if (running_.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(75));
+            }
+            continue;
         }
         pipe_.store(handle);
         const bool connected = ConnectNamedPipe(handle, nullptr) != FALSE || GetLastError() == ERROR_PIPE_CONNECTED;

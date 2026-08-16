@@ -1,0 +1,50 @@
+name: Publish npm Package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run npm publish in dry-run mode'
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Run CLI Tests
+        run: |
+          cd cli
+          node test/cli.test.js
+
+      - name: Verify Package Contents
+        run: |
+          cd cli
+          npm pack --dry-run
+
+      - name: Publish to npm Registry
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd cli
+          if ("${{ github.event.inputs.dry_run }}" -eq "true") {
+            npm publish --access public --dry-run
+          } else {
+            npm publish --access public
+          }

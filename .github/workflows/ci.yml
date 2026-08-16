@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: CLI tests and artifact hashes
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify published artifact hashes
+        shell: pwsh
+        run: |
+          Get-Content -LiteralPath SHA256SUMS.txt | ForEach-Object {
+            if ([string]::IsNullOrWhiteSpace($_)) { return }
+            $parts = $_ -split '\s+', 2
+            if ($parts.Count -ne 2) { throw "Malformed SHA256SUMS line: $_" }
+            $expected = $parts[0].ToUpperInvariant()
+            $path = $parts[1]
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
+            if ($actual -ne $expected) {
+              throw "SHA-256 mismatch for ${path}. Expected $expected, received $actual"
+            }
+            Write-Host "OK $path"
+          }
+
+      - name: Run CLI tests
+        run: node cli/test/cli.test.js
+
+  android:
+    name: Android unit tests and release APK
+    runs-on: windows-2022
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android packages
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
+          if (-not (Test-Path -LiteralPath $sdkmanager)) {
+            $sdkmanager = Get-ChildItem -Path $env:ANDROID_HOME -Recurse -Filter sdkmanager.bat |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $sdkmanager) { throw "sdkmanager.bat was not found under ANDROID_HOME" }
+          $packages = @(
+            'platform-tools',
+            'platforms;android-37',
+            'build-tools;37.0.0',
+            'ndk;29.0.14206865',
+            'cmake;3.31.6'
+          )
+          & $sdkmanager --install @packages
+          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed with exit code $LASTEXITCODE" }
+
+      - name: Unit tests and release assemble
+        working-directory: mobile
+        shell: pwsh
+        run: |
+          if (-not $env:ANDROID_HOME) { throw "ANDROID_HOME is not set" }
+          $env:ANDROID_NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk\29.0.14206865'
+          if (-not (Test-Path -LiteralPath $env:ANDROID_NDK_HOME)) {
+            throw "Pinned NDK is missing: $($env:ANDROID_NDK_HOME)"
+          }
+          .\gradlew.bat --no-configuration-cache --no-daemon testDebugUnitTest assembleRelease
+
+  windows:
+    name: Windows receiver build and tests
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bootstrap pinned OBS headers
+        shell: pwsh
+        run: .\pc\scripts\bootstrap-windows.ps1
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -S pc -B pc/build -G "Visual Studio 17 2022" -A x64 -T v143 -DLOCAL_CAMERA_BUILD_TESTS=ON
+
+      - name: Build receiver, plugin, pairing app, and tests
+        shell: pwsh
+        run: |
+          cmake --build pc/build --config Release --target receiver_tests local_camera_receiver local_camera_pairing --parallel 8
+
+      - name: Run receiver tests
+        shell: pwsh
+        run: .\pc\build\Release\receiver_tests.exe

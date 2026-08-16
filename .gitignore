@@ -20,6 +20,20 @@
 !LocalCameraSender.apk
 !LocalCameraReceiverSetup.exe
 
+# Agent handoff prompts (local only, never committed)
+prompts/
+
+# Secrets, credentials, and machine-local identity
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.snk
+.env
+.env.*
+receiver.dat
+**/receiver.dat
+
 # IDE and machine-local files
 .idea/
 *.iml

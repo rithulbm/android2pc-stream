@@ -80,4 +80,59 @@ class EncodedVideoNormalizerTest {
 
         assertArrayEquals(valid + byteArrayOf(0, 0, 1, 0x65), key)
     }
+
+    @Test
+    fun convertsAvccNalWhoseLengthLooksLikeAThreeByteStartCode() {
+        val payload = ByteArray(300) { index -> if (index == 0) 0x41 else (index % 251).toByte() }
+        val input = byteArrayOf(0, 0, 1, 0x2C) + payload
+
+        val output = EncodedVideoNormalizer().normalizeFrame(input, keyFrame = false)
+
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1) + payload, output)
+    }
+
+    @Test
+    fun preservesThreeByteAnnexBStartCodes() {
+        val input = byteArrayOf(0, 0, 1, 0x41, 2, 3, 4)
+
+        val output = EncodedVideoNormalizer().normalizeFrame(input, keyFrame = false)
+
+        assertArrayEquals(input, output)
+        assertFalse(input === output)
+    }
+
+    @Test
+    fun preservesThreeByteAnnexBWithMultipleNals() {
+        val input = byteArrayOf(0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 3)
+
+        val output = EncodedVideoNormalizer().normalizeFrame(input, keyFrame = false)
+
+        assertArrayEquals(input, output)
+    }
+
+    @Test
+    fun concatenatesHevcConfigurationOntoKeyFrames() {
+        val vps = byteArrayOf(0, 0, 0, 1, 0x40, 1)
+        val sps = byteArrayOf(0, 0, 0, 1, 0x42, 2)
+        val pps = byteArrayOf(0, 0, 0, 1, 0x44, 3)
+        val normalizer = EncodedVideoNormalizer()
+        assertTrue(normalizer.setCodecConfiguration(listOf(vps + sps + pps)))
+        assertTrue(normalizer.hasCodecConfiguration())
+
+        val key = byteArrayOf(0, 0, 0, 1, 0x26, 4)
+        val output = normalizer.normalizeFrame(key, keyFrame = true)
+
+        assertArrayEquals(vps + sps + pps + key, output)
+    }
+
+    @Test
+    fun locksAvccFormatAfterFirstValidLengthPrefixedUnit() {
+        val first = byteArrayOf(0, 0, 0, 2, 0x67, 1)
+        val secondPayload = ByteArray(256) { index -> if (index == 0) 0x41 else 7 }
+        val second = byteArrayOf(0, 0, 1, 0x00) + secondPayload
+        val normalizer = EncodedVideoNormalizer()
+
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 0x67, 1), normalizer.normalizeFrame(first, keyFrame = false))
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1) + secondPayload, normalizer.normalizeFrame(second, keyFrame = false))
+    }
 }

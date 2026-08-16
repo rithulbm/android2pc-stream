@@ -106,3 +106,22 @@ object QualitySelector {
     fun allProductProfiles(): List<QualityProfile> = QualityProfile.entries
 }
 
+/** Picks a Camera2 AE / high-speed FPS range without aborting when the exact target is missing. */
+object FpsRangeSelector {
+    fun choose(candidates: List<Pair<Int, Int>>, target: Int): Pair<Int, Int>? {
+        if (candidates.isEmpty() || target <= 0) return null
+        val covering = candidates.filter { it.first <= target && it.second >= target }
+        if (covering.isNotEmpty()) {
+            return covering.minWith(
+                compareBy<Pair<Int, Int>> { it.second - it.first }
+                    .thenByDescending { it.first },
+            )
+        }
+        return candidates.maxWith(
+            compareBy<Pair<Int, Int>> { it.second }
+                .thenBy { it.second - it.first }
+                .thenByDescending { it.first },
+        )
+    }
+}
+

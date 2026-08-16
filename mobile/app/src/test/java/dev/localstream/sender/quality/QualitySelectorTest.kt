@@ -57,6 +57,16 @@ class QualitySelectorTest {
         )
     }
 
+    @Test
+    fun fpsRangePrefersTightCoveringRangeThenHighestUpperBound() {
+        assertEquals(30 to 30, FpsRangeSelector.choose(listOf(15 to 30, 30 to 30, 15 to 15), 30))
+        assertEquals(60 to 60, FpsRangeSelector.choose(listOf(7 to 60, 60 to 60, 30 to 30), 60))
+        assertEquals(7 to 60, FpsRangeSelector.choose(listOf(15 to 30, 7 to 60, 30 to 30), 60))
+        assertEquals(15 to 30, FpsRangeSelector.choose(listOf(15 to 15, 15 to 30), 60))
+        assertNull(FpsRangeSelector.choose(emptyList(), 60))
+        assertNull(FpsRangeSelector.choose(listOf(15 to 30), 0))
+    }
+
     private fun capabilities(
         supported: Set<QualityProfile>,
     ): Map<QualityProfile, ProfileCapability> = QualityProfile.entries

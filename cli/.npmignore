@@ -1,0 +1,6 @@
+test/
+*.tmp
+*.tmp.*
+.git*
+.DS_Store
+Thumbs.db

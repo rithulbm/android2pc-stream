@@ -13,6 +13,8 @@ import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -20,14 +22,17 @@ import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.util.Range
 import android.view.Surface
+import dev.localstream.sender.quality.FpsRangeSelector
 import dev.localstream.sender.quality.ProfileCapability
 import dev.localstream.sender.quality.QualityProfile
 import dev.localstream.sender.quality.VideoCodec
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -68,9 +73,12 @@ class VideoEncoder(
     private var cameraOpening = false
     private var session: CameraCaptureSession? = null
     private var codec: MediaCodec? = null
+    private var codecCallback: MediaCodec.Callback? = null
     private var inputSurface: Surface? = null
     private var captureFpsRange: Range<Int>? = null
     private var lastKeyFrameRequestNs = 0L
+    private val codecConfigParts = mutableListOf<ByteArray>()
+    private val formatProvidedCodecConfig = AtomicBoolean(false)
     private val availabilityCallback = object : CameraManager.AvailabilityCallback() {
         override fun onCameraUnavailable(cameraId: String) {
             if (cameraId == config.cameraId && running.get() && !cameraOpening && camera == null) {
@@ -143,10 +151,7 @@ class VideoEncoder(
         ) {
             mediaFormat.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         }
-        created.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        inputSurface = created.createInputSurface()
-        codec = created
-        created.setCallback(object : MediaCodec.Callback() {
+        val callback = object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
 
             override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
@@ -154,17 +159,37 @@ class VideoEncoder(
             }
 
             override fun onError(codec: MediaCodec, exception: MediaCodec.CodecException) {
+                Log.w(TAG, "encoder error recoverable=${exception.isRecoverable} transient=${exception.isTransient}")
                 if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-                val parts = listOfNotNull(copyBuffer(format.getByteBuffer("csd-0")), copyBuffer(format.getByteBuffer("csd-1")))
-                if (parts.isEmpty() || !normalizer.setCodecConfiguration(parts)) {
-                    if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
+                val parts = listOfNotNull(
+                    copyBuffer(format.getByteBuffer("csd-0")),
+                    copyBuffer(format.getByteBuffer("csd-1")),
+                )
+                if (parts.isEmpty()) {
+                    Log.i(TAG, "output format has no CSD; waiting for in-band config")
+                    return
+                }
+                replaceCodecConfigParts(parts)
+                if (normalizer.setCodecConfiguration(codecConfigParts.toList())) {
+                    formatProvidedCodecConfig.set(true)
+                } else {
+                    Log.w(TAG, "format CSD rejected; waiting for in-band config")
                 }
             }
-        }, encoderHandler)
+        }
+        codecCallback = callback
+        created.setCallback(callback, encoderHandler)
+        created.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        inputSurface = created.createInputSurface()
+        codec = created
         created.start()
+        Log.i(
+            TAG,
+            "encoder started mime=${config.codec.mimeType} ${config.profile.width}x${config.profile.height}@${config.profile.framesPerSecond}",
+        )
     }
 
     private fun handleOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
@@ -179,8 +204,19 @@ class VideoEncoder(
             val isConfiguration = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
             val isKeyFrame = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
             if (isConfiguration) {
-                if (!normalizer.setCodecConfiguration(listOf(bytes)) && running.get()) {
-                    onFailure(MediaFailure.VIDEO_ENCODER)
+                if (!formatProvidedCodecConfig.get()) {
+                    codecConfigParts += bytes.copyOf()
+                    if (!normalizer.setCodecConfiguration(codecConfigParts.toList()) &&
+                        !normalizer.hasCodecConfiguration() &&
+                        running.get()
+                    ) {
+                        onFailure(MediaFailure.VIDEO_ENCODER)
+                    }
+                }
+            } else if (!normalizer.hasCodecConfiguration()) {
+                if (isKeyFrame) {
+                    Log.e(TAG, "keyframe produced before any codec configuration")
+                    if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
                 }
             } else {
                 val accessUnit = normalizer.normalizeFrame(bytes, isKeyFrame)
@@ -239,6 +275,7 @@ class VideoEncoder(
         val openedCamera = cameraResult.get() ?: return false
         camera = openedCamera
         val encoderSurface = inputSurface ?: return false
+        val fpsRange = captureFpsRange ?: return false
         val sessionLatch = CountDownLatch(1)
         val configured = AtomicBoolean(false)
         val callback = object : CameraCaptureSession.StateCallback() {
@@ -265,11 +302,25 @@ class VideoEncoder(
                 if (running.get()) onFailure(MediaFailure.CAMERA_SESSION)
             }
         }
-        if (config.capability.constrainedHighSpeed) {
-            openedCamera.createConstrainedHighSpeedCaptureSession(listOf(encoderSurface), callback, cameraHandler)
+        val sessionType = if (config.capability.constrainedHighSpeed) {
+            SessionConfiguration.SESSION_HIGH_SPEED
         } else {
-            openedCamera.createCaptureSession(listOf(encoderSurface), callback, cameraHandler)
+            SessionConfiguration.SESSION_REGULAR
         }
+        val sessionParameters = openedCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+        }.build()
+        val sessionConfig = SessionConfiguration(
+            sessionType,
+            listOf(OutputConfiguration(encoderSurface)),
+            Executor { command ->
+                cameraHandler.post(command)
+                Unit
+            },
+            callback,
+        )
+        sessionConfig.setSessionParameters(sessionParameters)
+        openedCamera.createCaptureSession(sessionConfig)
         return sessionLatch.await(CAMERA_START_TIMEOUT_SECONDS, TimeUnit.SECONDS) && configured.get()
     }
 
@@ -302,6 +353,12 @@ class VideoEncoder(
         return ByteArray(duplicate.remaining()).also { duplicate.get(it) }
     }
 
+    private fun replaceCodecConfigParts(parts: List<ByteArray>) {
+        codecConfigParts.forEach { it.fill(0) }
+        codecConfigParts.clear()
+        codecConfigParts += parts
+    }
+
     private fun chooseFpsRange(manager: CameraManager): Range<Int>? {
         val characteristics = manager.getCameraCharacteristics(config.cameraId)
         val target = config.profile.framesPerSecond
@@ -311,9 +368,10 @@ class VideoEncoder(
         } else {
             characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.toList().orEmpty()
         }
-        return candidates
-            .filter { it.lower <= target && it.upper >= target }
-            .minWithOrNull(compareBy<Range<Int>> { it.upper - it.lower }.thenByDescending { it.lower })
+        val chosen = FpsRangeSelector.choose(candidates.map { it.lower to it.upper }, target) ?: return null
+        val range = candidates.firstOrNull { it.lower == chosen.first && it.upper == chosen.second } ?: return null
+        Log.i(TAG, "selected fps range ${range.lower}-${range.upper} for target $target")
+        return range
     }
 
     override fun close() {
@@ -347,9 +405,12 @@ class VideoEncoder(
         }
         codec?.release()
         codec = null
+        codecCallback = null
         inputSurface?.release()
         inputSurface = null
         captureFpsRange = null
+        replaceCodecConfigParts(emptyList())
+        formatProvidedCodecConfig.set(false)
         normalizer.clear()
         stopThread(cameraThread)
         stopThread(encoderThread)
@@ -366,6 +427,7 @@ class VideoEncoder(
     }
 
     companion object {
+        private const val TAG = "VideoEncoder"
         private const val KEY_FRAME_INTERVAL_SECONDS = 2f
         private const val KEY_FRAME_REQUEST_INTERVAL_NS = 500_000_000L
         private const val CAMERA_START_TIMEOUT_SECONDS = 5L

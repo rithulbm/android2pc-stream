@@ -257,6 +257,8 @@ void test_obs_source_contract()
 {
     expect((lcr::kReceiverSourceOutputFlags & OBS_SOURCE_COMPOSITE) != 0U,
            "receiver must remain a composite source");
+    expect((lcr::kReceiverSourceOutputFlags & OBS_SOURCE_CUSTOM_DRAW) != 0U,
+           "composite receiver must custom-draw its ffmpeg child");
     expect((lcr::kReceiverSourceOutputFlags & OBS_SOURCE_AUDIO) == 0U,
            "composite source must not claim direct audio");
     expect(lcr::receiver_source_registration_contract(lcr::kReceiverSourceOutputFlags, true),
@@ -266,6 +268,9 @@ void test_obs_source_contract()
     expect(!lcr::receiver_source_registration_contract(
                lcr::kReceiverSourceOutputFlags | OBS_SOURCE_AUDIO, true),
            "composite receiver must never advertise direct audio");
+    expect(!lcr::receiver_source_registration_contract(
+               OBS_SOURCE_VIDEO | OBS_SOURCE_COMPOSITE | OBS_SOURCE_DO_NOT_DUPLICATE, true),
+           "composite receiver without custom draw must fail the contract");
 }
 
 void test_pairing_launch_arguments()

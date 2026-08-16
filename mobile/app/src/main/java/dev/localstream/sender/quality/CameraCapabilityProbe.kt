@@ -36,11 +36,14 @@ class CameraCapabilityProbe(context: Context) {
                 .orEmpty()
             val supportsHighSpeed =
                 CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_CONSTRAINED_HIGH_SPEED_VIDEO in capabilities
+            val aeRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.map { it.lower to it.upper }
+                .orEmpty()
             CameraChoice(
                 cameraId = cameraId,
                 label = lensLabel(lensFacing),
                 lensFacing = lensFacing,
-                profiles = evaluateProfiles(map, supportsHighSpeed, encoders),
+                profiles = evaluateProfiles(map, supportsHighSpeed, encoders, aeRanges),
             )
         }.sortedWith(
             compareBy<CameraChoice> { it.lensFacing != CameraCharacteristics.LENS_FACING_BACK }
@@ -55,6 +58,7 @@ class CameraCapabilityProbe(context: Context) {
         map: StreamConfigurationMap,
         supportsHighSpeed: Boolean,
         encoders: List<EncoderSupport>,
+        aeRanges: List<Pair<Int, Int>>,
     ): Map<QualityProfile, ProfileCapability> {
         val recordingSizes = map.getOutputSizes(MediaRecorder::class.java)?.toSet().orEmpty()
         val highSpeedSizes = if (supportsHighSpeed) map.highSpeedVideoSizes.toSet() else emptySet()
@@ -64,7 +68,11 @@ class CameraCapabilityProbe(context: Context) {
             } else {
                 val size = Size(profile.width, profile.height)
                 val regularFps = maximumRegularFps(map, size)
-                val regularSupported = size in recordingSizes && regularFps >= profile.framesPerSecond
+                val selectedAe = FpsRangeSelector.choose(aeRanges, profile.framesPerSecond)
+                val regularSupported = size in recordingSizes &&
+                    regularFps >= profile.framesPerSecond &&
+                    selectedAe != null &&
+                    selectedAe.second >= profile.framesPerSecond
                 val highSpeedSupported = size in highSpeedSizes &&
                     map.getHighSpeedVideoFpsRangesFor(size).any { range ->
                         range.lower <= profile.framesPerSecond && range.upper >= profile.framesPerSecond

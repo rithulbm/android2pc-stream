@@ -533,7 +533,6 @@ std::vector<std::filesystem::path> obs_candidates()
         candidates.emplace_back(std::filesystem::path(program_files) / L"obs-studio" / L"bin" / L"64bit" / L"obs64.exe");
     }
     std::free(program_files);
-    candidates.emplace_back(L"D:\\obs\\obs-studio\\bin\\64bit\\obs64.exe");
     return candidates;
 }
 

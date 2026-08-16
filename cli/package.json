@@ -1,0 +1,49 @@
+{
+  "name": "local-camera-receiver",
+  "version": "0.1.0",
+  "description": "Download and launch Local Camera Receiver for OBS Studio on Windows via npx or npm.",
+  "bin": {
+    "local-camera-receiver": "./bin/cli.js",
+    "local-cam-rec": "./bin/cli.js"
+  },
+  "main": "./bin/cli.js",
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "keywords": [
+    "obs",
+    "obs-studio",
+    "obs-plugin",
+    "camera",
+    "webcam",
+    "android",
+    "srt",
+    "streaming",
+    "local-network",
+    "local-camera-receiver",
+    "cli"
+  ],
+  "author": "rithulbm",
+  "license": "GPL-2.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rithulbm/android2pc-stream.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rithulbm/android2pc-stream/issues"
+  },
+  "homepage": "https://github.com/rithulbm/android2pc-stream#readme"
+}
