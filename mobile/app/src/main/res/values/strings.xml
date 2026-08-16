@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Local Camera Sender</string>
+    <string name="app_subtitle">Send your camera securely to one paired PC on this network.</string>
+    <string name="pair_pc">Pair PC</string>
+    <string name="change_pc">Change</string>
+    <string name="remove_pc">Remove</string>
+    <string name="quality">Quality</string>
+    <string name="camera">Camera</string>
+    <string name="include_microphone">Include microphone</string>
+    <string name="start_streaming">Start streaming</string>
+    <string name="stop_streaming">Stop streaming</string>
+    <string name="ready">Ready</string>
+    <string name="pair_to_start">Pair a PC to start</string>
+    <string name="connecting">Connecting…</string>
+    <string name="notification_title">Camera streaming</string>
+    <string name="scan_pairing_code">Scan the pairing code on your PC</string>
+    <string name="invalid_pairing_code">This pairing code is not valid.</string>
+    <string name="expired_pairing_code">This pairing code has expired. Make a new one on your PC.</string>
+    <string name="camera_unavailable">Camera is not available. Try again in a moment.</string>
+    <string name="battery_help">Battery help</string>
+    <string name="battery_help_message">If streaming stops with the screen off, allow this app to run in the background in your phone settings.</string>
+    <string name="cancel">Cancel</string>
+    <string name="allow_requested_access">Allow the requested access before streaming.</string>
+    <string name="checking_camera">Checking this phone’s camera…</string>
+    <string name="no_camera_found">No supported camera was found.</string>
+    <string name="no_pc_paired">No PC paired</string>
+    <string name="camera_scan_permission">Camera access is needed to scan the pairing code.</string>
+    <string name="pairing_save_failed">Pairing could not be saved. Please scan the code again.</string>
+    <string name="paired_getting_ready">Paired. Getting your camera ready…</string>
+    <string name="paired_starting_stream">Paired. Starting your camera for OBS…</string>
+    <string name="remove_pairing_title">Remove paired PC?</string>
+    <string name="remove_pairing_message">Streaming will stop, and you’ll need to scan a new code before connecting again.</string>
+    <string name="quality_with_codec">%1$s · %2$s</string>
+    <string name="quality_unavailable">%1$s — unavailable</string>
+    <string name="camera_indexed">%1$s %2$d</string>
+</resources>

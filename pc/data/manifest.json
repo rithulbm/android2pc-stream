@@ -1,0 +1,9 @@
+{
+  "name": "Local Camera Receiver",
+  "id": "local-camera-receiver",
+  "version": "0.1.0",
+  "author": "Local Camera Receiver contributors",
+  "description": "Secure local-Wi-Fi Android camera receiver for OBS Studio 32.2.x.",
+  "platforms": ["windows-x64"]
+}
+

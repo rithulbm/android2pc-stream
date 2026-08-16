@@ -1,0 +1,21 @@
+Local Camera Sender third-party notices
+========================================
+
+This APK is distributed as part of a GPL-2.0-or-later source distribution.
+Corresponding source, build scripts, exact source locks, and all license files
+are provided in the repository containing this APK.
+
+Runtime components:
+
+* Kotlin runtime and standard library — Apache License 2.0.
+* ZXing Core 3.5.4 — Apache License 2.0.
+  Copyright 2007 ZXing authors.
+* Haivision SRT 1.5.6 — Mozilla Public License 2.0.
+  MPL-covered local build-file changes are documented in
+  mobile/app/src/main/cpp/third_party/SOURCE_LOCK.md and shipped as source.
+* Botan 3.12.0 — Simplified BSD License (BSD-2-Clause).
+  Copyright Jack Lloyd and Botan contributors.
+
+Test-only components such as AndroidX Test, Espresso, and JUnit are not shipped
+in the production APK. See mobile/docs/dependency-licenses.md for versions,
+license identifiers, source URLs, redistribution notes, and verification.

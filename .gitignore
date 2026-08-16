@@ -1,0 +1,50 @@
+# Local Android toolchains and downloaded archives
+.android-sdk/
+.android-avd/
+.toolchains/
+.gradle-user/
+.gradle-user-home/
+.install/
+*.zip
+*.tar.xz
+
+# Android/Gradle outputs
+.gradle/
+**/.gradle/
+**/build/
+**/.cxx/
+**/local.properties
+*.apk
+*.aab
+*.idsig
+!LocalCameraSender.apk
+!LocalCameraReceiverSetup.exe
+
+# IDE and machine-local files
+.idea/
+*.iml
+captures/
+local.properties
+
+# Native build outputs
+out/
+cmake-build-*/
+
+# Upstream-only test/docs payloads are not needed by either minimized native
+# build. Runtime sources, build metadata, and complete license texts remain.
+mobile/app/src/main/cpp/third_party/botan/src/tests/
+mobile/app/src/main/cpp/third_party/botan/doc/
+mobile/app/src/main/cpp/third_party/botan/.github/
+mobile/app/src/main/cpp/third_party/botan/.devcontainer/
+mobile/app/src/main/cpp/third_party/botan/src/bogo_shim/
+mobile/app/src/main/cpp/third_party/botan/src/cli/
+mobile/app/src/main/cpp/third_party/botan/src/ct_selftest/
+mobile/app/src/main/cpp/third_party/botan/src/editors/
+mobile/app/src/main/cpp/third_party/botan/src/examples/
+mobile/app/src/main/cpp/third_party/botan/src/fuzzer/
+mobile/app/src/main/cpp/third_party/botan/src/python/
+mobile/app/src/main/cpp/third_party/srt/test/
+mobile/app/src/main/cpp/third_party/srt/testing/
+mobile/app/src/main/cpp/third_party/srt/docs/
+mobile/app/src/main/cpp/third_party/srt/examples/
+mobile/app/src/main/cpp/third_party/srt/apps/
