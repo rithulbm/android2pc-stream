@@ -152,6 +152,122 @@ management, thermal limits, sustained A/V sync, reconnect, and long-run loss
 recovery. A compile or rendered QR alone is not evidence for those lifecycle
 gates.
 
+## How it works
+
+Nothing leaves the local Wi-Fi. The phone is always the caller. The PC only
+listens on one private IPv4 address. Pairing is a QR you scan once; after that
+the same encrypted secret is used for every SRT session.
+
+### 1. Pieces
+
+```mermaid
+flowchart LR
+  phone["Android phone<br/>Local Camera Sender"]
+  wifi["Private Wi-Fi"]
+  helper["Pairing helper<br/>LocalCameraReceiver.exe"]
+  obs["OBS 32.2.1<br/>Local Camera Receiver source"]
+
+  phone -->|"SRT caller<br/>AES-256-GCM UDP 9000"| wifi
+  wifi -->|"SRT listener<br/>selected private IPv4"| obs
+  helper -->|"in-memory QR<br/>and DPAPI settings"| phone
+  obs -->|"local show-QR pipe<br/>no secret on the pipe"| helper
+```
+
+### 2. Pairing
+
+The helper paints the QR in memory. The payload is a short-lived URI: receiver
+id, private host, port 9000, 32-byte secret, expiries. The phone stores that
+record in Android Keystore. The PC stores the same record with DPAPI for the
+current Windows user. A new QR replaces the old secret.
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant OBS
+  participant Helper as Pairing helper
+  participant Phone as Android app
+
+  User->>OBS: Add Local Camera Receiver
+  User->>OBS: Show pairing QR
+  OBS->>Helper: local control pipe /show-qr
+  Helper->>Helper: load or create DPAPI config
+  Helper->>User: paint QR in memory
+  User->>Phone: scan QR
+  Phone->>Phone: validate private IPv4 and secret
+  Phone->>Phone: encrypt record in Keystore
+  Phone->>User: request camera / mic / local network
+  Phone->>Helper: SRT connect with the QR secret
+```
+
+### 3. Phone sender
+
+Camera frames never become a Kotlin bitmap. Camera2 writes into a MediaCodec
+input surface. The encoder emits Annex-B access units (HEVC preferred, AVC
+fallback). Those bytes go across JNI into an MPEG-TS muxer, then out an SRT
+caller socket.
+
+```mermaid
+flowchart TB
+  cam["Camera2 capture"]
+  mic["Optional mic<br/>AAC-LC"]
+  enc["Hardware MediaCodec<br/>HEVC or AVC"]
+  norm["Annex-B normalizer<br/>SPS/PPS/VPS on keyframes"]
+  mux["Native MPEG-TS muxer<br/>7 x 188-byte packets"]
+  srt["SRT caller<br/>AES-256-GCM"]
+
+  cam -->|"Surface, no raw frames"| enc
+  enc --> norm
+  norm --> mux
+  mic --> mux
+  mux -->|"1316-byte groups"| srt
+```
+
+### 4. OBS receiver
+
+OBS does not decode SRT itself. The plugin listens, checks every TS group, and
+writes to a private named pipe. A hidden `ffmpeg_source` child reads MPEG-TS
+from that pipe. The composite parent custom-draws the child texture and copies
+its audio mix.
+
+```mermaid
+flowchart TB
+  listen["SrtListener<br/>private IPv4 :9000"]
+  check["Reject plaintext,<br/>CTR, and bad TS sync"]
+  pipe["Named pipe<br/>current-user only"]
+  child["Private ffmpeg_source<br/>input_format mpegts"]
+  parent["ReceiverSource<br/>CUSTOM_DRAW composite"]
+
+  listen --> check
+  check --> pipe
+  pipe --> child
+  child -->|"video_render + audio mix"| parent
+  parent --> preview["OBS Preview and Program"]
+```
+
+### 5. What is never on the wire as a service
+
+```mermaid
+flowchart LR
+  subgraph local [Local only]
+    qr[QR in RAM]
+    dpapi[Windows DPAPI file]
+    keystore[Android Keystore]
+    srt[SRT on LAN]
+  end
+
+  subgraph absent [Not used]
+    cloud[Cloud / accounts]
+    browser[Browser pairing page]
+    stun[STUN / TURN]
+    listenPhone[Phone inbound port]
+  end
+
+  qr --> keystore
+  qr --> dpapi
+  keystore --> srt
+  dpapi --> srt
+```
+
 ## License
 
 Application code is distributed as `GPL-2.0-or-later`. That expression is
