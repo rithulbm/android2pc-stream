@@ -20,6 +20,7 @@ public:
     [[nodiscard]] bool start();
     void stop() noexcept;
     [[nodiscard]] bool enqueue(std::span<const std::uint8_t> packet);
+    [[nodiscard]] bool client_connected() const noexcept { return client_connected_.load(); }
     [[nodiscard]] const std::wstring &pipe_name() const noexcept;
 
 private:
@@ -29,6 +30,7 @@ private:
     BoundedPacketQueue queue_;
     std::atomic<bool> running_{false};
     std::atomic<bool> restart_transport_{false};
+    std::atomic<bool> client_connected_{false};
     std::thread worker_;
     std::atomic<void *> pipe_{nullptr};
 };
