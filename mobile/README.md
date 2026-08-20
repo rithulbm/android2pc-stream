@@ -72,7 +72,9 @@ serial number, account, advertising ID, or other unique device identifier.
 ## Known limitations
 
 - The 0.2.0 Windows installer, plugin discovery, source restoration, helper
-  control pipe, and UDP 9000 listener were verified on the target OBS 32.2.1 PC.
+  control pipe, and UDP 9000 listener were originally verified on an OBS 32.2.1
+  target PC. The current installer requires OBS 32.2.2 or newer and deliberately
+  has no upper-version block, so future OBS releases are permitted.
 - Emulator and static tests cannot prove screen-off/lock survival, 4K60 hardware encoding, thermal stability, OEM battery handling, Wi-Fi roaming, or two-hour sustained streaming.
 - The preview geometry is unit-tested, but real rear/front camera optics,
   autofocus, exposure, rotation, and microphone A/V sync require a physical
