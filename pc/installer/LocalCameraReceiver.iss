@@ -25,8 +25,15 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 PrivilegesRequired=admin
 CloseApplications=yes
-CloseApplicationsFilter=obs64.exe,LocalCameraReceiver.exe
+; CloseApplicationsFilter names installed resources, not the processes that use them.
+; This lets Restart Manager ask OBS/the tray helper to close before replacement instead
+; of scheduling our plugin/helper files for replacement during the next Windows boot.
+CloseApplicationsFilter=LocalCameraReceiver.exe,local-camera-receiver.dll
 RestartApplications=no
+; The bundled VC++ redistributable already runs with /norestart. Do not turn a
+; redistributable's pending-file request into a surprise full-PC reboot prompt.
+RestartIfNeededByRun=no
+AlwaysRestart=no
 SetupLogging=yes
 WizardStyle=modern
 DisableFinishedPage=no
@@ -48,8 +55,11 @@ Name: "startup"; Description: "Keep the pairing helper ready in the system tray 
 Name: "desktopicon"; Description: "Create a desktop shortcut for pairing"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\build\package\local-camera-receiver\bin\64bit\local-camera-receiver.dll"; DestDir: "{app}\bin\64bit"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "..\build\package\local-camera-receiver\bin\64bit\LocalCameraReceiver.exe"; DestDir: "{app}\bin\64bit"; Flags: ignoreversion restartreplace uninsrestartdelete
+; Never defer these files to reboot. If OBS or the helper still owns them after
+; Restart Manager runs, Setup should stop and let the user close the application
+; rather than silently turning an application update into a system restart.
+Source: "..\build\package\local-camera-receiver\bin\64bit\local-camera-receiver.dll"; DestDir: "{app}\bin\64bit"; Flags: ignoreversion
+Source: "..\build\package\local-camera-receiver\bin\64bit\LocalCameraReceiver.exe"; DestDir: "{app}\bin\64bit"; Flags: ignoreversion
 Source: "..\build\package\local-camera-receiver\data\manifest.json"; DestDir: "{app}\data"; Flags: ignoreversion
 Source: "..\build\package\local-camera-receiver\data\locale\en-US.ini"; DestDir: "{app}\data\locale"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}\licenses"; DestName: "GPL-2.0-or-later.txt"; Flags: ignoreversion
