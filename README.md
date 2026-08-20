@@ -18,17 +18,24 @@ Local Camera Sender is a two-part, local-Wi-Fi camera system:
 
 ## Download
 
-The ready-to-use files are kept at the repository root:
+The ready-to-use files are kept at the repository root. Every successful `main`
+CI build refreshes both binaries, `SHA256SUMS.txt`, the hashes below, and the
+CLI's pinned installer hash only after Android, Windows, and CLI validation pass.
+Pull requests publish downloadable workflow artifacts without replacing these
+canonical root files.
 
 | Platform | Download | SHA-256 |
 |---|---|---|
 | Android | [LocalCameraSender.apk](./LocalCameraSender.apk) | `023BE34575170155A25717FF8A63836410F0DF6313F863AD6667AB4984D45E4E` |
 | Windows / OBS | [LocalCameraReceiverSetup.exe](./LocalCameraReceiverSetup.exe) | `11C4298F3B2A9A396ED78742B493D87B1161CD3670D12952E9F68822B5A3B95D` |
 
-The APK is development-signed and the Windows installer is not Authenticode
-signed because no private production certificates are part of this public
-repository. Windows may show an unknown-publisher or reputation warning. Verify
-the hash above before running either artifact.
+The APK is signed with the repository's stable, development-only CI certificate;
+it is not a production trust identity. The Windows installer is not Authenticode
+signed because no private production certificate is part of this repository.
+Windows may show an unknown-publisher or reputation warning. Verify the hashes
+above before running either artifact. If an older APK was signed by a different
+local development certificate, Android may require one uninstall before moving
+to the stable CI-signed builds.
 
 ## Quick start
 
@@ -55,10 +62,10 @@ local-camera-receiver
 
 The receiver remembers its encrypted settings. Choose **Finish & run in
 background** after pairing; the tray helper then starts with Windows, so normal
-use does not require repeating setup. The OBS properties show a readable
-waiting, connected, reconnecting, or failure state and include a status-refresh
-button. The phone microphone is enabled by default and can be turned off before
-pairing.
+use does not require repeating setup. Receiver state is propagated to the helper
+and OBS as the connection moves through listening, authenticating, streaming,
+reconnecting, or failure. The phone microphone is enabled by default and can be
+turned off before pairing.
 
 Each new QR replaces the previous secret. The QR is valid for ten minutes; the
 receiver credential lasts at most one year.
@@ -72,8 +79,9 @@ receiver credential lasts at most one year.
 - Windows DPAPI encrypts the complete receiver record for the current user.
 - The native pairing app paints the QR directly in memory—no QR image, secret,
   URL, or passphrase is written to the clipboard, browser, or logs.
-- OBS opens the already-running helper through a current-user-only local control
-  pipe. The pipe rejects remote clients and accepts one exact bounded command.
+- OBS and the pairing helper use a current-user-only local message pipe. It
+  rejects remote clients and accepts only bounded protocol messages for showing
+  the QR or propagating receiver state; pairing secrets never travel on it.
 - The phone sends only a sanitized, non-unique model label for OBS status. It is
   trusted and displayed only after the required encrypted connection is secured.
 - The optional firewall rule is restricted to `obs64.exe`, UDP 9000, Private
@@ -102,7 +110,7 @@ and installer are the only root binaries intended for version control.
 
 ### Android
 
-Prerequisites: JDK 17, Android SDK/API 37, Build Tools 36.0.0, NDK 29.0.14206865,
+Prerequisites: JDK 17, Android SDK/API 37, Build Tools 37.0.0, NDK 29.0.14206865,
 and a connected/emulated API 37 device for instrumentation tests.
 
 ```powershell
@@ -113,20 +121,24 @@ Set-Location mobile
 Gradle dependency verification is locked with SHA-256 checksums. The release
 runtime graph and production APK are documented in
 [`mobile/docs/dependency-licenses.md`](./mobile/docs/dependency-licenses.md).
+The canonical root APK is additionally aligned, signed, and certificate-verified
+by CI using the stable development identity documented in
+[`mobile/signing/README.md`](./mobile/signing/README.md).
 
 ### Windows / OBS
 
-Prerequisites: Visual Studio 2022 Build Tools with MSVC v143 and Windows SDK
-10.0.26100, CMake 3.30+, Python 3, and Inno Setup 6.
+Prerequisites: Visual Studio 2022 with MSVC v143 and a Windows SDK, CMake 3.30+,
+Python 3, and Inno Setup 6.
 
 ```powershell
 .\pc\scripts\build-windows.ps1
 ```
 
 The script hash-verifies pinned OBS 32.2.1 headers, builds the private static
-SRT/Botan stack, treats project warnings as errors, runs native tests, and
-recreates `LocalCameraReceiverSetup.exe` at the root. It does not download or
-redistribute OBS binaries.
+SRT/Botan stack, treats project warnings as errors, runs native tests, discovers
+the installed Visual C++ x64 runtime, and recreates
+`LocalCameraReceiverSetup.exe` at the root. It does not download or redistribute
+OBS binaries.
 
 ## Validation status
 
@@ -139,12 +151,11 @@ finished-state UI.
 
 The OBS registration bug found in the original 0.1.0 install is fixed in the
 0.2.0 installer: the composite wrapper no longer advertises an invalid direct
-audio flag, while audio still comes from its active FFmpeg child. The 0.2.0
-installer was upgraded on the target Windows PC; OBS 32.2.1 discovered the DLL,
-restored the source without a registration error, and the source bound the
-selected private address on UDP 9000. The installed background helper also
-accepted an OBS-style `/show-qr` request over its local control pipe and surfaced
-the existing pairing window without starting a second helper.
+audio flag, while audio still comes from its active FFmpeg child. The receiver
+custom-draws and enumerates that child, defaults to software decoding for the
+most reliable HEVC/SRT path, and exposes hardware decoding as an optional source
+setting. Live SRT state is also forwarded to the pairing helper instead of
+leaving the QR window on a stale ready message.
 
 Hardware-dependent behavior still requires testing on each target phone and
 network: 4K/60 capability, HEVC support, screen-off camera survival, OEM power
@@ -170,7 +181,7 @@ flowchart LR
   phone -->|"SRT caller<br/>AES-256-GCM UDP 9000"| wifi
   wifi -->|"SRT listener<br/>selected private IPv4"| obs
   helper -->|"in-memory QR<br/>and DPAPI settings"| phone
-  obs -->|"local show-QR pipe<br/>no secret on the pipe"| helper
+  obs -->|"local control/status pipe<br/>no secret on the pipe"| helper
 ```
 
 ### 2. Pairing
@@ -196,7 +207,8 @@ sequenceDiagram
   Phone->>Phone: validate private IPv4 and secret
   Phone->>Phone: encrypt record in Keystore
   Phone->>User: request camera / mic / local network
-  Phone->>Helper: SRT connect with the QR secret
+  Phone->>OBS: SRT connect with the QR secret
+  OBS->>Helper: live receiver state over local status pipe
 ```
 
 ### 3. Phone sender
@@ -227,7 +239,8 @@ flowchart TB
 OBS does not decode SRT itself. The plugin listens, checks every TS group, and
 writes to a private named pipe. A hidden `ffmpeg_source` child reads MPEG-TS
 from that pipe. The composite parent custom-draws the child texture and copies
-its audio mix.
+its audio mix. Software decoding is the reliability default; hardware decoding
+can be enabled in source properties when the local GPU/driver path is known-good.
 
 ```mermaid
 flowchart TB

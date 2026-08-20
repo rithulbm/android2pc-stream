@@ -9,12 +9,14 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -101,7 +103,7 @@ class AudioEncoder(
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, SAMPLE_RATE, CHANNELS).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, bufferBytes)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, AAC_PCM_FRAME_BYTES)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
         }
         val createdCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -121,30 +123,42 @@ class AudioEncoder(
     private fun feedInput() {
         val activeCodec = codec ?: return
         val activeRecorder = recorder ?: return
-        var nextPresentationTimeUs = System.nanoTime() / 1_000L
+        val audioTimestamp = AudioTimestamp()
+        var totalSampleFramesRead = 0L
+        var fallbackOriginNs = 0L
         try {
             while (running.get()) {
                 val index = activeCodec.dequeueInputBuffer(CODEC_TIMEOUT_US)
                 if (index < 0) continue
                 val buffer = activeCodec.getInputBuffer(index)
-                if (buffer == null) {
+                if (buffer == null || buffer.capacity() < AAC_PCM_FRAME_BYTES) {
+                    activeCodec.queueInputBuffer(index, 0, 0, 0, 0)
                     if (running.get()) onFailure(MediaFailure.AUDIO_ENCODER)
                     return
                 }
                 buffer.clear()
-                val bytesRead = activeRecorder.read(buffer, buffer.capacity(), AudioRecord.READ_BLOCKING)
-                if (bytesRead <= 0) {
-                    // Every dequeued MediaCodec input index must be returned, including when
-                    // AudioRecord transiently produces no bytes or reports a terminal error.
-                    activeCodec.queueInputBuffer(index, 0, 0, nextPresentationTimeUs, 0)
-                    if (bytesRead < 0 && running.get()) {
-                        onFailure(MediaFailure.AUDIO_CAPTURE)
-                    }
+                val bytesRead = activeRecorder.read(buffer, AAC_PCM_FRAME_BYTES, AudioRecord.READ_BLOCKING)
+                if (bytesRead != AAC_PCM_FRAME_BYTES) {
+                    activeCodec.queueInputBuffer(index, 0, 0, 0, 0)
+                    if (bytesRead < 0 && running.get()) onFailure(MediaFailure.AUDIO_CAPTURE)
                     continue
                 }
-                activeCodec.queueInputBuffer(index, 0, bytesRead, nextPresentationTimeUs, 0)
-                val sampleFrames = bytesRead / BYTES_PER_SAMPLE_FRAME
-                nextPresentationTimeUs += sampleFrames * 1_000_000L / SAMPLE_RATE
+
+                val blockStartFrame = totalSampleFramesRead
+                totalSampleFramesRead += AAC_SAMPLES_PER_FRAME
+                val presentationTimeUs = if (
+                    activeRecorder.getTimestamp(audioTimestamp, AudioTimestamp.TIMEBASE_BOOTTIME) == AudioRecord.SUCCESS
+                ) {
+                    val frameDelta = blockStartFrame - audioTimestamp.framePosition
+                    (audioTimestamp.nanoTime + frameDelta * NANOS_PER_SECOND / SAMPLE_RATE) / 1_000L
+                } else {
+                    if (fallbackOriginNs == 0L) {
+                        fallbackOriginNs = SystemClock.elapsedRealtimeNanos() -
+                            blockStartFrame * NANOS_PER_SECOND / SAMPLE_RATE
+                    }
+                    (fallbackOriginNs + blockStartFrame * NANOS_PER_SECOND / SAMPLE_RATE) / 1_000L
+                }
+                activeCodec.queueInputBuffer(index, 0, AAC_PCM_FRAME_BYTES, presentationTimeUs, 0)
             }
         } catch (_: IllegalStateException) {
             if (running.get()) onFailure(MediaFailure.AUDIO_ENCODER)
@@ -226,6 +240,9 @@ class AudioEncoder(
         const val CHANNELS = 1
         private const val BIT_RATE = 128_000
         private const val BYTES_PER_SAMPLE_FRAME = 2
+        private const val AAC_SAMPLES_PER_FRAME = 1024
+        private const val AAC_PCM_FRAME_BYTES = AAC_SAMPLES_PER_FRAME * BYTES_PER_SAMPLE_FRAME
+        private const val NANOS_PER_SECOND = 1_000_000_000L
         private const val MINIMUM_AUDIO_BUFFER_BYTES = 8_192
         private const val MAX_AUDIO_ACCESS_UNIT_BYTES = 64 * 1024
         private const val CODEC_TIMEOUT_US = 10_000L

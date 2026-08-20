@@ -167,16 +167,17 @@ class VideoEncoder(
                 val parts = listOfNotNull(
                     copyBuffer(format.getByteBuffer("csd-0")),
                     copyBuffer(format.getByteBuffer("csd-1")),
+                    copyBuffer(format.getByteBuffer("csd-2")),
                 )
                 if (parts.isEmpty()) {
-                    Log.i(TAG, "output format has no CSD; waiting for in-band config")
+                    Log.i(TAG, "output format has no CSD; accepting in-band codec configuration")
                     return
                 }
                 replaceCodecConfigParts(parts)
                 if (normalizer.setCodecConfiguration(codecConfigParts.toList())) {
                     formatProvidedCodecConfig.set(true)
                 } else {
-                    Log.w(TAG, "format CSD rejected; waiting for in-band config")
+                    Log.w(TAG, "format CSD rejected; accepting in-band codec configuration")
                 }
             }
         }
@@ -206,21 +207,16 @@ class VideoEncoder(
             if (isConfiguration) {
                 if (!formatProvidedCodecConfig.get()) {
                     codecConfigParts += bytes.copyOf()
-                    if (!normalizer.setCodecConfiguration(codecConfigParts.toList()) &&
-                        !normalizer.hasCodecConfiguration() &&
-                        running.get()
-                    ) {
-                        onFailure(MediaFailure.VIDEO_ENCODER)
+                    if (!normalizer.setCodecConfiguration(codecConfigParts.toList())) {
+                        Log.i(TAG, "partial in-band codec configuration; waiting for additional CSD")
                     }
                 }
-            } else if (!normalizer.hasCodecConfiguration()) {
-                if (isKeyFrame) {
-                    Log.e(TAG, "keyframe produced before any codec configuration")
-                    if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
-                }
             } else {
+                // Some Android encoders provide VPS/SPS/PPS only inside the first keyframe.
+                // Do not abort merely because an out-of-band CSD callback has not arrived.
                 val accessUnit = normalizer.normalizeFrame(bytes, isKeyFrame)
                 if (accessUnit == null) {
+                    Log.w(TAG, "encoder produced an invalid access unit")
                     if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
                 } else if (!onAccessUnit(accessUnit, info.presentationTimeUs, isKeyFrame)) {
                     requestKeyFrame()

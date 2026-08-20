@@ -20,12 +20,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
+          package-manager-cache: false
 
       - name: Verify published artifact hashes
         shell: pwsh
@@ -47,18 +48,22 @@ jobs:
         run: node cli/test/cli.test.js
 
   android:
-    name: Android unit tests and release APK
+    name: Android tests and signed release APK
     runs-on: windows-2022
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            mobile/**/*.gradle*
+            mobile/gradle/wrapper/gradle-wrapper.properties
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
@@ -78,28 +83,155 @@ jobs:
           }
           .\gradlew.bat --no-configuration-cache --no-daemon testDebugUnitTest assembleRelease
 
+      - name: Sign and verify release APK
+        shell: pwsh
+        run: |
+          $releaseDirectory = Join-Path $env:GITHUB_WORKSPACE 'mobile\app\build\outputs\apk\release'
+          $unsigned = Get-ChildItem -LiteralPath $releaseDirectory -File -Filter '*-unsigned.apk' | Select-Object -First 1
+          if ($null -eq $unsigned) { throw "Unsigned release APK was not produced in $releaseDirectory" }
+
+          $buildTools = Join-Path $env:ANDROID_HOME 'build-tools\37.0.0'
+          $zipalign = Join-Path $buildTools 'zipalign.exe'
+          $apksigner = Join-Path $buildTools 'apksigner.bat'
+          foreach ($tool in @($zipalign, $apksigner)) {
+            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Android build tool missing: $tool" }
+          }
+
+          $keystore = Join-Path $env:RUNNER_TEMP 'local-camera-ci-development.p12'
+          $encoded = (Get-Content -LiteralPath 'mobile\signing\ci-development.p12.b64' -Raw).Trim()
+          [IO.File]::WriteAllBytes($keystore, [Convert]::FromBase64String($encoded))
+
+          $artifactDirectory = Join-Path $env:GITHUB_WORKSPACE 'artifacts\android'
+          New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
+          $aligned = Join-Path $env:RUNNER_TEMP 'LocalCameraSender-aligned.apk'
+          $signed = Join-Path $artifactDirectory 'LocalCameraSender.apk'
+
+          & $zipalign -p -f 4 $unsigned.FullName $aligned
+          if ($LASTEXITCODE -ne 0) { throw "zipalign failed with exit code $LASTEXITCODE" }
+
+          & $apksigner sign `
+            --ks $keystore `
+            --ks-type PKCS12 `
+            --ks-key-alias local-camera-development `
+            --ks-pass pass:development-only `
+            --key-pass pass:development-only `
+            --out $signed `
+            $aligned
+          if ($LASTEXITCODE -ne 0) { throw "apksigner failed with exit code $LASTEXITCODE" }
+
+          $verification = (& $apksigner verify --verbose --print-certs $signed 2>&1) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "APK signature verification failed.`n$verification" }
+          Write-Host $verification
+          $expectedCertificate = 'fd0621d9b86389f259de377dee27afb456477fdbd20b9c57697ac5d36e7c4be7'
+          if ($verification.ToLowerInvariant() -notmatch $expectedCertificate) {
+            throw "APK signer certificate did not match the pinned CI development certificate."
+          }
+
+          Remove-Item -LiteralPath $keystore, $aligned -Force -ErrorAction SilentlyContinue
+          $hash = (Get-FileHash -LiteralPath $signed -Algorithm SHA256).Hash
+          Write-Host "Signed APK SHA-256: $hash"
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-camera-android
+          path: artifacts/android/LocalCameraSender.apk
+          if-no-files-found: error
+          retention-days: 14
+
   windows:
-    name: Windows receiver build and tests
+    name: Windows installer, plugin, and tests
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Bootstrap pinned OBS headers
+      - name: Install Inno Setup
         shell: pwsh
-        run: .\pc\scripts\bootstrap-windows.ps1
+        run: choco install innosetup --yes --no-progress
 
-      - name: Configure CMake
+      - name: Build receiver, plugin, tests, and installer
+        shell: pwsh
+        run: .\pc\scripts\build-windows.ps1
+
+      - name: Stage Windows artifacts
         shell: pwsh
         run: |
-          cmake -S pc -B pc/build -G "Visual Studio 17 2022" -A x64 -T v143 -DLOCAL_CAMERA_BUILD_TESTS=ON
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath 'LocalCameraReceiverSetup.exe' -Destination $stage
+          $package = 'pc\build\package\local-camera-receiver'
+          if (-not (Test-Path -LiteralPath $package -PathType Container)) {
+            throw "Windows plugin package was not produced: $package"
+          }
+          Copy-Item -LiteralPath $package -Destination (Join-Path $stage 'local-camera-receiver') -Recurse
+          Get-FileHash -LiteralPath (Join-Path $stage 'LocalCameraReceiverSetup.exe') -Algorithm SHA256
 
-      - name: Build receiver, plugin, pairing app, and tests
-        shell: pwsh
+      - name: Upload Windows installer and plugin bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-camera-windows
+          path: artifacts/windows
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-root:
+    name: Refresh repository-root downloads
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - cli
+      - android
+      - windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: local-camera-android
+          path: .release/android
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: local-camera-windows
+          path: .release/windows
+
+      - name: Refresh root binaries and hashes
+        run: python .github/scripts/publish-root-artifacts.py
+
+      - name: Verify refreshed root downloads
+        shell: bash
         run: |
-          cmake --build pc/build --config Release --target receiver_tests local_camera_receiver local_camera_pairing --parallel 8
+          set -euo pipefail
+          while read -r expected path; do
+            actual="$(sha256sum "$path" | awk '{print toupper($1)}')"
+            if [[ "$actual" != "${expected^^}" ]]; then
+              echo "SHA-256 mismatch for $path" >&2
+              exit 1
+            fi
+          done < SHA256SUMS.txt
+          node cli/test/cli.test.js
 
-      - name: Run receiver tests
-        shell: pwsh
-        run: .\pc\build\Release\receiver_tests.exe
+      - name: Commit refreshed downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add LocalCameraSender.apk LocalCameraReceiverSetup.exe SHA256SUMS.txt README.md cli/lib/config.js
+          if git diff --cached --quiet; then
+            echo "Repository-root downloads are already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Refresh published APK and Windows installer"
+          git push origin HEAD:main

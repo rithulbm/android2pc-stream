@@ -30,7 +30,15 @@ This exact clean gate was verified on the bundled API 37 emulator. It runs 43
 JVM tests, strict Android lint, 7 device tests, native builds for both ABIs, the
 debug APK, and the minified unsigned release APK.
 
-Primary installable handoff: `../LocalCameraSender.apk`. It is the release variant signed with the local Android development certificate for installation testing. A private production signing key must replace that certificate before publication.
+Primary installable handoff: `../LocalCameraSender.apk`. Successful `main` CI
+builds align the minified release APK, sign it with the stable development-only
+CI identity in [`signing/`](./signing/), verify the signer certificate and APK,
+and then refresh the repository-root handoff only after the full CI gate passes.
+The development signing key is intentionally public and is never a production
+trust identity. A private production signing key must replace it before store or
+production publication.
+
+Gradle unsigned release output: `app/build/outputs/apk/release/app-release-unsigned.apk`
 
 Gradle debug APK: `app/build/outputs/apk/debug/app-debug.apk`
 
@@ -40,11 +48,12 @@ For a release configuration check without production signing:
 ./gradlew.bat test lint assembleRelease
 ```
 
-The Gradle release output remains unsigned until a private production signing configuration is supplied outside the repository.
+The Gradle release output remains unsigned until a signing step is applied; the
+canonical root APK gets that signing step in GitHub Actions.
 
 ## Run
 
-1. Install the debug APK with `../.android-sdk/platform-tools/adb.exe install -r app/build/outputs/apk/debug/app-debug.apk`.
+1. Install the canonical `../LocalCameraSender.apk`, or use the debug APK for local development. If you previously installed a build signed by a different local development certificate, Android may require one uninstall before moving to the stable CI-signed APKs.
 2. Open the app and scan a protocol-v1 pairing QR code generated from the contract in `../pc/README.md`.
 3. Grant camera, microphone (enabled by default), and notification permission
    when asked. Android 17 also asks for local-network access; Android 10–16 do
