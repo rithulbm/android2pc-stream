@@ -5,7 +5,7 @@ const os = require('os');
 
 const VERSION = '0.1.0';
 const BINARY_NAME = 'LocalCameraReceiverSetup.exe';
-const EXPECTED_SHA256 = '11c4298f3b2a9a396ed78742b493d87b1161cd3670d12952e9f68822b5a3b95d';
+const EXPECTED_SHA256 = 'c1cd3d32a009e73c3a0741b8e7c5395d3be7968341cee9297fe1b13985c81957';
 
 const GITHUB_REPO = 'rithulbm/android2pc-stream';
 const PRIMARY_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/${BINARY_NAME}`;

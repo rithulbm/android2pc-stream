@@ -26,8 +26,8 @@ canonical root files.
 
 | Platform | Download | SHA-256 |
 |---|---|---|
-| Android | [LocalCameraSender.apk](./LocalCameraSender.apk) | `023BE34575170155A25717FF8A63836410F0DF6313F863AD6667AB4984D45E4E` |
-| Windows / OBS | [LocalCameraReceiverSetup.exe](./LocalCameraReceiverSetup.exe) | `11C4298F3B2A9A396ED78742B493D87B1161CD3670D12952E9F68822B5A3B95D` |
+| Android | [LocalCameraSender.apk](./LocalCameraSender.apk) | `DBE4ADEFDF067627208003F4472BFD8ECFD42D51B2DEEC9F406FB57BB7403A4F` |
+| Windows / OBS | [LocalCameraReceiverSetup.exe](./LocalCameraReceiverSetup.exe) | `C1CD3D32A009E73C3A0741B8E7C5395D3BE7968341CEE9297FE1B13985C81957` |
 
 The APK is signed with the repository's stable, development-only CI certificate;
 it is not a production trust identity. The Windows installer is not Authenticode
