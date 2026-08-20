@@ -33,6 +33,8 @@ bool ObsApi::load() noexcept
         resolve(module_, data_set_default_string, "obs_data_set_default_string") &&
         resolve(module_, source_create_private, "obs_source_create_private") &&
         resolve(module_, source_release, "obs_source_release") &&
+        resolve(module_, source_get_settings, "obs_source_get_settings") &&
+        resolve(module_, source_update, "obs_source_update") &&
         resolve(module_, source_add_active_child, "obs_source_add_active_child") &&
         resolve(module_, source_remove_active_child, "obs_source_remove_active_child") &&
         resolve(module_, source_video_render, "obs_source_video_render") &&
