@@ -1,4 +1,5 @@
 #include "local_camera_receiver/obs_api.hpp"
+#include "local_camera_receiver/pairing_control_protocol.hpp"
 #include "local_camera_receiver/receiver_config.hpp"
 #include "local_camera_receiver/receiver_source_contract.hpp"
 #include "local_camera_receiver/receiver_status_text.hpp"
@@ -6,6 +7,7 @@
 
 #include <Windows.h>
 #include <bcrypt.h>
+#include <sddl.h>
 #include <shellapi.h>
 
 #include <array>
@@ -17,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace lcr {
 namespace {
@@ -88,6 +91,56 @@ bool refresh_receiver_status(obs_properties_t *, obs_property_t *, void *)
     return true;
 }
 
+std::wstring current_user_control_pipe_name() noexcept
+{
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE) return {};
+    DWORD required = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &required);
+    if (required == 0 || required > 64U * 1024U) {
+        CloseHandle(token);
+        return {};
+    }
+    std::vector<std::uint8_t> buffer(required);
+    const bool queried = GetTokenInformation(token, TokenUser, buffer.data(), required, &required) != FALSE;
+    CloseHandle(token);
+    if (!queried) return {};
+    const auto *user = reinterpret_cast<const TOKEN_USER *>(buffer.data());
+    LPWSTR sid = nullptr;
+    if (ConvertSidToStringSidW(user->User.Sid, &sid) == FALSE || sid == nullptr) return {};
+    std::wstring name = L"\\\\.\\pipe\\local-camera-receiver-control-" + std::wstring(sid);
+    LocalFree(sid);
+    return name;
+}
+
+PairingReceiverState pairing_state(const ReceiverState state) noexcept
+{
+    switch (state) {
+    case ReceiverState::stopped: return PairingReceiverState::stopped;
+    case ReceiverState::waiting_for_pairing: return PairingReceiverState::waiting_for_pairing;
+    case ReceiverState::listening: return PairingReceiverState::listening;
+    case ReceiverState::authenticating: return PairingReceiverState::authenticating;
+    case ReceiverState::streaming: return PairingReceiverState::streaming;
+    case ReceiverState::reconnecting: return PairingReceiverState::reconnecting;
+    case ReceiverState::failed: return PairingReceiverState::failed;
+    }
+    return PairingReceiverState::failed;
+}
+
+void publish_pairing_helper_status(const ReceiverStatus &status) noexcept
+{
+    const std::wstring pipe_name = current_user_control_pipe_name();
+    if (pipe_name.empty()) return;
+    if (WaitNamedPipeW(pipe_name.c_str(), 25) == FALSE) return;
+    const HANDLE pipe = CreateFileW(
+        pipe_name.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (pipe == INVALID_HANDLE_VALUE) return;
+    const auto command = receiver_status_command(pairing_state(status.state));
+    DWORD written = 0;
+    WriteFile(pipe, command.data(), static_cast<DWORD>(command.size()), &written, nullptr);
+    CloseHandle(pipe);
+}
+
 class ReceiverSource final {
 public:
     ReceiverSource(obs_data_t *settings, obs_source_t *source) : source_(source)
@@ -124,7 +177,7 @@ public:
         if (!api.source_add_active_child(source_, child_)) return;
         child_active_.store(true);
 
-        listener_ = std::make_unique<SrtListener>(*sink_, [](const ReceiverStatus &) {});
+        listener_ = std::make_unique<SrtListener>(*sink_, publish_pairing_helper_status);
         valid_.store(true);
         watcher_ = std::thread(&ReceiverSource::watch_config, this);
     }
@@ -148,21 +201,12 @@ public:
         return listener_ ? listener_->status() : ReceiverStatus{};
     }
 
-    void activate() noexcept
-    {
-        active_.store(true);
-    }
-
-    void deactivate() noexcept
-    {
-        active_.store(false);
-    }
+    void activate() noexcept { active_.store(true); }
+    void deactivate() noexcept { active_.store(false); }
 
     void enum_child(obs_source_enum_proc_t callback, void *param) const noexcept
     {
-        if (child_ != nullptr && callback != nullptr) {
-            callback(source_, child_, param);
-        }
+        if (child_ != nullptr && callback != nullptr) callback(source_, child_, param);
     }
 
     void update(obs_data_t *settings) noexcept
@@ -193,12 +237,10 @@ public:
         std::size_t sample_rate) const noexcept
     {
         if (child_ == nullptr || timestamp_out == nullptr || audio_output == nullptr) return false;
-
         auto &api = obs_api();
         if (api.source_audio_pending(child_)) return false;
         const std::uint64_t timestamp = api.source_get_audio_timestamp(child_);
         if (timestamp == 0U) return false;
-
         obs_source_audio_mix child_audio{};
         api.source_get_audio_mix(child_, &child_audio);
         for (std::size_t mix = 0; mix < MAX_AUDIO_MIXES; ++mix) {
@@ -268,13 +310,11 @@ private:
 };
 
 const char *source_name(void *) { return "Local Camera Receiver"; }
-
 void *source_create(obs_data_t *settings, obs_source_t *source)
 {
     auto receiver = std::make_unique<ReceiverSource>(settings, source);
     return receiver->valid() ? receiver.release() : nullptr;
 }
-
 void source_destroy(void *data) { delete static_cast<ReceiverSource *>(data); }
 void source_update(void *data, obs_data_t *settings) { static_cast<ReceiverSource *>(data)->update(settings); }
 void source_activate(void *data) { static_cast<ReceiverSource *>(data)->activate(); }
@@ -313,10 +353,7 @@ obs_properties_t *source_properties(void *data)
     const auto *receiver = static_cast<ReceiverSource *>(data);
     const std::string status = receiver_status_text(receiver != nullptr ? receiver->status() : ReceiverStatus{});
     obs_property_t *connection = api.properties_add_text(
-        properties,
-        "connection_status",
-        status.c_str(),
-        OBS_TEXT_INFO);
+        properties, "connection_status", status.c_str(), OBS_TEXT_INFO);
     if (connection != nullptr) {
         api.property_set_long_description(
             connection,
