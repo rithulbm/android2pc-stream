@@ -5,7 +5,7 @@
 
 ![Android](https://img.shields.io/badge/Android-API%2029%2B-3DDC84?logo=android&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?logo=windows11&logoColor=white)
-![OBS](https://img.shields.io/badge/OBS%20Studio-32.2.1-302E31?logo=obsstudio&logoColor=white)
+![OBS](https://img.shields.io/badge/OBS%20Studio-32.2.2%2B-302E31?logo=obsstudio&logoColor=white)
 ![Transport](https://img.shields.io/badge/SRT-AES--256--GCM-6F42C1)
 ![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)
 
@@ -52,7 +52,7 @@ local-camera-receiver
 ```
 
 ### Manual Setup
-1. Install or update **OBS Studio 32.2.1 x64** on Windows 10 or 11.
+1. Install **OBS Studio 32.2.2 x64 or newer** on Windows 10 or 11. The receiver installer enforces only this minimum and does not block newer OBS releases.
 2. Run `LocalCameraReceiverSetup.exe` (or use `npx local-camera-receiver`) and keep the Private-network firewall task selected.
 3. In OBS, choose **Sources + → Local Camera Receiver**.
 4. Open that source's properties and choose **Show pairing QR**.
@@ -135,11 +135,12 @@ Python 3, and Inno Setup 6.
 .\pc\scripts\build-windows.ps1
 ```
 
-The script hash-verifies pinned OBS 32.2.1 headers, builds the private static
-SRT/Botan stack, treats project warnings as errors, runs native tests, discovers
-the installed Visual C++ x64 runtime, and recreates
-`LocalCameraReceiverSetup.exe` at the root. It does not download or redistribute
-OBS binaries.
+The script hash-verifies a reproducible OBS 32.2.1 build-header snapshot, builds
+the private static SRT/Botan stack, treats project warnings as errors, runs
+native tests, discovers the installed Visual C++ x64 runtime, and recreates
+`LocalCameraReceiverSetup.exe` at the root. That header snapshot is only a
+build-time baseline: the installer runtime policy accepts OBS 32.2.2 and every
+newer version. It does not download or redistribute OBS binaries.
 
 ## Validation status
 
@@ -177,7 +178,7 @@ flowchart LR
   phone["Android phone<br/>Local Camera Sender"]
   wifi["Private Wi-Fi"]
   helper["Pairing helper<br/>LocalCameraReceiver.exe"]
-  obs["OBS 32.2.1<br/>Local Camera Receiver source"]
+  obs["OBS 32.2.2+<br/>Local Camera Receiver source"]
 
   phone -->|"SRT caller<br/>AES-256-GCM UDP 9000"| wifi
   wifi -->|"SRT listener<br/>selected private IPv4"| obs
