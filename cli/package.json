@@ -20,8 +20,7 @@
     "win32"
   ],
   "cpu": [
-    "x64",
-    "arm64"
+    "x64"
   ],
   "keywords": [
     "obs",
