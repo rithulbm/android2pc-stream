@@ -27,6 +27,30 @@ function Resolve-BuildTool {
     throw "Required Windows build tool was not found: $Command"
 }
 
+function Resolve-VcRedist {
+    $roots = @()
+    if (${env:ProgramFiles(x86)}) {
+        $roots += Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022'
+    }
+    if ($env:ProgramFiles) {
+        $roots += Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2022'
+    }
+
+    $matches = foreach ($root in $roots) {
+        if (Test-Path -LiteralPath $root -PathType Container) {
+            Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'vc_redist.x64.exe' -ErrorAction SilentlyContinue
+        }
+    }
+    $selected = $matches |
+        Where-Object { $_.FullName -match '\\VC\\Redist\\MSVC\\' } |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1
+    if ($null -eq $selected) {
+        throw 'Microsoft Visual C++ x64 redistributable was not found under Visual Studio 2022.'
+    }
+    return $selected.FullName
+}
+
 $cmake = Resolve-BuildTool -Command 'cmake.exe' -Candidates @(
     'C:\Program Files\CMake\bin\cmake.exe'
 )
@@ -44,6 +68,7 @@ if ($env:ProgramFiles) {
     $innoCandidates += Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
 }
 $innoCompiler = Resolve-BuildTool -Command 'ISCC.exe' -Candidates $innoCandidates
+$vcRedist = Resolve-VcRedist
 
 & (Join-Path $PSScriptRoot 'bootstrap-windows.ps1')
 
@@ -106,7 +131,7 @@ Invoke-CleanProcess -FilePath $ctest -ArgumentList @(
     '--output-on-failure'
 )
 
-& $innoCompiler (Join-Path $pcRoot 'installer\LocalCameraReceiver.iss')
+& $innoCompiler "/DVcRedistPath=$vcRedist" (Join-Path $pcRoot 'installer\LocalCameraReceiver.iss')
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE"
 }
