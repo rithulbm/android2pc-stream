@@ -4,11 +4,13 @@ This directory contains the native Windows half of Local Camera Sender. It is
 an OBS input source backed by a private static SRT 1.5.6 + Botan 3.12.0 stack,
 plus a small native pairing app and an Inno Setup installer.
 
-The supported production target for this build is **OBS Studio 32.2.1 x64 on
-Windows 10/11**. The installer checks that exact OBS release before changing
-the machine because the source intentionally uses OBS's private built-in
-`ffmpeg_source` for MPEG-TS demux/decode while keeping all module registration,
-source ownership, rendering, and audio activation on public libobs APIs.
+The supported production runtime target is **OBS Studio 32.2.2 x64 or newer on
+Windows 10/11**. The installer enforces only that minimum version; it has no
+maximum-version gate, so future OBS releases are permitted instead of being
+blocked or mistaken for an older unsupported build. The source uses OBS's
+private built-in `ffmpeg_source` for MPEG-TS demux/decode while keeping module
+registration, source ownership, rendering, and audio activation on public
+libobs APIs.
 
 ## What gets installed
 
@@ -92,8 +94,11 @@ phone → authenticated SRT/AES-GCM listener → private local named pipe
 ## Build
 
 The checked-in sources pin SRT/Botan with the Android sender and vendor the
-MIT QR generator. OBS 32.2.1 headers are fetched and hash-verified by the
-bootstrap script; OBS binaries are never bundled.
+MIT QR generator. For reproducible compilation, the bootstrap script currently
+fetches and hash-verifies the OBS 32.2.1 source headers; this is a build-time
+header baseline only and is not an installed-OBS version restriction. Runtime
+installation accepts OBS 32.2.2 and all newer versions. OBS binaries are never
+bundled.
 
 From an x64 PowerShell prompt:
 
@@ -131,11 +136,13 @@ FFmpeg child. The checked-in installed-plugin diagnostic parses the latest OBS
 log and fails if the module, registration, or source identity is missing.
 
 The real 0.2.0 installer upgrade, installed helper IPC, OBS 32.2.1 module/source
-discovery, and private-interface UDP 9000 bind have been verified on the target
-Windows PC. Physical-phone acceptance still requires authenticated AES-GCM
-transport, live video/audio sync, reconnect, wrong-secret/downgrade rejection,
-and long-run testing on each intended phone and network. Do not treat an
-emulator build or QR screenshot as proof of those hardware-dependent gates.
+discovery, and private-interface UDP 9000 bind were verified on the original
+target Windows PC. The installer now treats 32.2.2 as the minimum runtime and
+permits newer OBS versions without an upper-bound block. Physical-phone
+acceptance still requires authenticated AES-GCM transport, live video/audio
+sync, reconnect, wrong-secret/downgrade rejection, and long-run testing on each
+intended phone and network. Do not treat an emulator build or QR screenshot as
+proof of those hardware-dependent gates.
 
 Protocol details remain the same as the mobile v1 contract: caller/listener,
 pairing URI fields, pinned PIDs, MPEG-TS timing, and downgrade rules are covered
