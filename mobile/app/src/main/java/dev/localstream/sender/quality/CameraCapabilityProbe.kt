@@ -8,6 +8,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaRecorder
 import android.util.Size
+import kotlin.math.roundToInt
 
 data class CameraChoice(
     val cameraId: String,
@@ -117,7 +118,9 @@ class CameraCapabilityProbe(context: Context) {
             0L
         }
         if (duration <= 0L) return 30
-        return (1_000_000_000L / duration).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return (1_000_000_000.0 / duration.toDouble())
+            .coerceAtMost(Int.MAX_VALUE.toDouble())
+            .roundToInt()
     }
 
     private fun chooseCodec(encoders: List<EncoderSupport>, profile: QualityProfile): VideoCodec? =
