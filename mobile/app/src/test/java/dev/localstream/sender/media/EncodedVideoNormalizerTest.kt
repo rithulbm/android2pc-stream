@@ -144,7 +144,7 @@ class EncodedVideoNormalizerTest {
         assertNotNull(first)
         assertTrue(first!!.keyFrame)
         assertTrue(normalizer.hasCodecConfiguration())
-        assertArrayEquals(configuration + firstEncoderKeyframe, first.bytes)
+        assertArrayEquals(firstEncoderKeyframe, first.bytes)
 
         val later = normalizer.normalizeAccessUnit(HEVC_IDR, keyFrameHint = true)
         assertNotNull(later)
@@ -155,12 +155,38 @@ class EncodedVideoNormalizerTest {
     fun recoversAvcParametersFromFirstInBandKeyframeAndReinjectsThemForever() {
         val normalizer = avc()
         val configuration = AVC_SPS + AVC_PPS
-        normalizer.normalizeAccessUnit(configuration + AVC_IDR, keyFrameHint = true)
+        val firstEncoderKeyframe = configuration + AVC_IDR
 
+        val first = normalizer.normalizeAccessUnit(firstEncoderKeyframe, keyFrameHint = true)
         val later = normalizer.normalizeAccessUnit(AVC_IDR, keyFrameHint = true)
 
         assertTrue(normalizer.hasCodecConfiguration())
+        assertArrayEquals(firstEncoderKeyframe, first!!.bytes)
         assertArrayEquals(configuration + AVC_IDR, later!!.bytes)
+    }
+
+    @Test
+    fun alreadyPrependedHardwareHeadersAreNotDuplicated() {
+        val normalizer = hevc()
+        val configuration = HEVC_VPS + HEVC_SPS + HEVC_PPS
+        assertTrue(normalizer.setCodecConfiguration(listOf(configuration)))
+        val hardwarePrepended = configuration + HEVC_IDR
+
+        val output = normalizer.normalizeFrame(hardwarePrepended, keyFrame = true)
+
+        assertArrayEquals(hardwarePrepended, output)
+    }
+
+    @Test
+    fun preservesMultipleParameterSetsOfTheSameType() {
+        val normalizer = avc()
+        val secondSps = START_CODE + byteArrayOf(0x67, 0x4D, 0x00, 0x1F)
+        val secondPps = START_CODE + byteArrayOf(0x68, 0x03, 0x04)
+        val configuration = AVC_SPS + secondSps + AVC_PPS + secondPps
+
+        assertTrue(normalizer.setCodecConfiguration(listOf(configuration)))
+
+        assertArrayEquals(configuration + AVC_IDR, normalizer.normalizeFrame(AVC_IDR, keyFrame = true))
     }
 
     @Test
