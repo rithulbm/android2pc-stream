@@ -1,6 +1,9 @@
 #define AppName "Local Camera Receiver"
 #define AppVersion "0.2.0"
 #define PluginId "local-camera-receiver"
+#ifndef VcRedistPath
+#define VcRedistPath "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\v143\vc_redist.x64.exe"
+#endif
 
 [Setup]
 AppId={{6E7CA4BA-4E2A-4E0B-9346-818D1D6FE92F}
@@ -53,7 +56,7 @@ Source: "..\docs\third-party-notices.md"; DestDir: "{app}\licenses"; Flags: igno
 Source: "..\..\mobile\app\src\main\cpp\third_party\srt\LICENSE"; DestDir: "{app}\licenses"; DestName: "SRT-MPL-2.0.txt"; Flags: ignoreversion
 Source: "..\..\mobile\app\src\main\cpp\third_party\botan\license.txt"; DestDir: "{app}\licenses"; DestName: "Botan-BSD-2-Clause.txt"; Flags: ignoreversion
 Source: "..\third_party\qrcodegen\Readme.markdown"; DestDir: "{app}\licenses"; DestName: "QR-Code-generator-MIT.md"; Flags: ignoreversion
-Source: "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\v143\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall dontcopy
+Source: "{#VcRedistPath}"; DestDir: "{tmp}"; Flags: deleteafterinstall dontcopy
 
 [Icons]
 Name: "{autoprograms}\Local Camera Receiver\Pair this PC"; Filename: "{app}\bin\64bit\LocalCameraReceiver.exe"; WorkingDir: "{app}\bin\64bit"
