@@ -16,7 +16,6 @@ import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
-import android.os.SystemClock
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -146,15 +145,17 @@ class AudioEncoder(
 
                 val blockStartFrame = totalSampleFramesRead
                 totalSampleFramesRead += AAC_SAMPLES_PER_FRAME
+                // Camera2 output sent directly to a MediaCodec encoder surface uses the
+                // monotonic recording clock. Keep microphone PTS in that same domain so
+                // accumulated device suspend time can never become an A/V offset.
                 val presentationTimeUs = if (
-                    activeRecorder.getTimestamp(audioTimestamp, AudioTimestamp.TIMEBASE_BOOTTIME) == AudioRecord.SUCCESS
+                    activeRecorder.getTimestamp(audioTimestamp, AudioTimestamp.TIMEBASE_MONOTONIC) == AudioRecord.SUCCESS
                 ) {
                     val frameDelta = blockStartFrame - audioTimestamp.framePosition
                     (audioTimestamp.nanoTime + frameDelta * NANOS_PER_SECOND / SAMPLE_RATE) / 1_000L
                 } else {
                     if (fallbackOriginNs == 0L) {
-                        fallbackOriginNs = SystemClock.elapsedRealtimeNanos() -
-                            blockStartFrame * NANOS_PER_SECOND / SAMPLE_RATE
+                        fallbackOriginNs = System.nanoTime() - blockStartFrame * NANOS_PER_SECOND / SAMPLE_RATE
                     }
                     (fallbackOriginNs + blockStartFrame * NANOS_PER_SECOND / SAMPLE_RATE) / 1_000L
                 }

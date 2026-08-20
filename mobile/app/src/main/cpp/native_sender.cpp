@@ -153,6 +153,13 @@ bool NativeSender::write_video(
         access_unit.empty()) {
         return false;
     }
+    if (current_status == SenderStatus::kConnecting || current_status == SenderStatus::kReconnecting) {
+        // The encoder may be running before SRT finishes its handshake. Drop those
+        // frames without backpressuring the encoder; a fresh IDR is requested once
+        // the secure transport transitions to kNeedsKeyFrame.
+        return true;
+    }
+
     std::lock_guard lock(mux_mutex_);
     if (!video_started_) {
         if (!key_frame) {
@@ -188,9 +195,13 @@ bool NativeSender::write_audio(
         access_unit.empty()) {
         return false;
     }
+    if (current_status != SenderStatus::kConnected) {
+        return true;
+    }
+
     std::lock_guard lock(mux_mutex_);
     if (!video_started_) {
-        return false;
+        return true;
     }
     MpegTsMuxer staged = muxer_;
     PacketBatch packets;
@@ -221,32 +232,38 @@ int NativeSender::queue_percent() const {
 }
 
 void NativeSender::worker_main() {
-    for (std::size_t attempt = 0; attempt <= kReconnectDelaySeconds.size() && !stopping_.load(); ++attempt) {
-        status_.store(attempt == 0 ? SenderStatus::kConnecting : SenderStatus::kReconnecting);
+    std::size_t consecutive_failures = 0;
+    bool has_streamed = false;
+    while (!stopping_.load()) {
+        status_.store(has_streamed ? SenderStatus::kReconnecting : SenderStatus::kConnecting);
         const int connected_socket = connect_socket();
         if (connected_socket == kInvalidSocket) {
-            queue_.clear();
             reset_mux_after_disconnect();
             if (is_authentication_error(error_.load())) {
                 set_failure(SenderStatus::kAuthenticationFailed, SenderError::kEncryptionRejected);
                 break;
             }
-            if (attempt == kReconnectDelaySeconds.size()) {
+            if (consecutive_failures >= kReconnectDelaySeconds.size()) {
                 set_failure(SenderStatus::kFailed, SenderError::kReconnectExhausted);
                 break;
             }
-            if (!wait_for_reconnect(attempt)) {
+            if (!wait_for_reconnect(consecutive_failures)) {
                 break;
             }
+            ++consecutive_failures;
             continue;
         }
 
         socket_.store(connected_socket);
         error_.store(SenderError::kNone);
-        status_.store(SenderStatus::kNeedsKeyFrame);
+        // First make the queue/mux epoch clean while producers still see Connecting or
+        // Reconnecting and therefore drop frames. Only then expose the keyframe demand.
         reset_mux_after_disconnect();
+        status_.store(SenderStatus::kNeedsKeyFrame);
+
         Packet packet;
         bool send_failed = false;
+        bool sent_media = false;
         while (!stopping_.load() && queue_.wait_pop(packet)) {
             if (packet.empty() || packet.size() > static_cast<std::size_t>(kPayloadBytes)) {
                 continue;
@@ -262,22 +279,32 @@ void NativeSender::worker_main() {
                 error_.store(SenderError::kSend);
                 break;
             }
+            sent_media = true;
             if (status_.load() == SenderStatus::kNeedsKeyFrame) {
                 status_.store(SenderStatus::kConnected);
             }
         }
         close_socket();
-        if (!stopping_.load() && send_failed) {
-            queue_.clear();
-            reset_mux_after_disconnect();
-            if (attempt == kReconnectDelaySeconds.size()) {
-                set_failure(SenderStatus::kFailed, SenderError::kReconnectExhausted);
-                break;
-            }
-            if (!wait_for_reconnect(attempt)) {
-                break;
-            }
+
+        if (stopping_.load()) {
+            break;
         }
+        reset_mux_after_disconnect();
+        if (sent_media) {
+            has_streamed = true;
+            consecutive_failures = 0;
+        }
+        if (!send_failed) {
+            continue;
+        }
+        if (consecutive_failures >= kReconnectDelaySeconds.size()) {
+            set_failure(SenderStatus::kFailed, SenderError::kReconnectExhausted);
+            break;
+        }
+        if (!wait_for_reconnect(consecutive_failures)) {
+            break;
+        }
+        ++consecutive_failures;
     }
 }
 
@@ -396,6 +423,7 @@ void NativeSender::set_failure(SenderStatus status, SenderError error) {
 
 void NativeSender::reset_mux_after_disconnect() {
     std::lock_guard lock(mux_mutex_);
+    queue_.clear();
     video_started_ = false;
 }
 

@@ -30,7 +30,22 @@ if(NOT EXISTS "${SHARED_NATIVE_ROOT}/srt/CMakeLists.txt" OR
     message(FATAL_ERROR "Pinned SRT 1.5.6/Botan 3.12.0 sources are missing")
 endif()
 
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 configure_file(cmake/obsconfig.h.in generated/obsconfig.h @ONLY)
+
+# Keep the Windows executable, tray icon, shortcuts, and installer on the same
+# deterministic brand mark without storing opaque binary source assets.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(APP_ICON_PATH "${CMAKE_CURRENT_BINARY_DIR}/generated/app.ico")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/resources/generate_icon.py" "${APP_ICON_PATH}"
+    RESULT_VARIABLE APP_ICON_RESULT
+)
+if(NOT APP_ICON_RESULT EQUAL 0 OR NOT EXISTS "${APP_ICON_PATH}")
+    message(FATAL_ERROR "Failed to generate the Local Camera Receiver application icon")
+endif()
+file(TO_CMAKE_PATH "${APP_ICON_PATH}" APP_ICON_PATH)
+configure_file(resources/app.rc generated/app.rc @ONLY)
 
 # Build a private, static SRT 1.5.6/Botan stack. OBS ships a different generic
 # srt.dll, so the plugin must not import or overwrite that process-wide module.
@@ -119,6 +134,7 @@ target_link_libraries(local_camera_receiver PRIVATE receiver_core shell32)
 add_executable(local_camera_pairing WIN32
     src/pairing_app.cpp
     third_party/qrcodegen/qrcodegen.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/app.rc"
 )
 set_target_properties(local_camera_pairing PROPERTIES OUTPUT_NAME "LocalCameraReceiver")
 target_include_directories(local_camera_pairing PRIVATE include third_party/qrcodegen)

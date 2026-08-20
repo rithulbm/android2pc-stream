@@ -79,11 +79,7 @@ class CameraCapabilityProbe(context: Context) {
                         range.lower <= profile.framesPerSecond && range.upper >= profile.framesPerSecond
                     }
                 val cameraSupported = regularSupported || highSpeedSupported
-                val codec = if (cameraSupported) {
-                    chooseCodec(encoders, profile)
-                } else {
-                    null
-                }
+                val encoder = if (cameraSupported) chooseEncoder(encoders, profile) else null
                 when {
                     !cameraSupported -> ProfileCapability(
                         profile,
@@ -92,19 +88,21 @@ class CameraCapabilityProbe(context: Context) {
                         "This camera cannot capture ${profile.displayName}.",
                     )
 
-                    codec == null -> ProfileCapability(
+                    encoder == null -> ProfileCapability(
                         profile,
                         null,
                         false,
-                        "This phone has no hardware encoder for ${profile.displayName}.",
+                        "This phone has no hardware encoder for ${profile.displayName} at a supported bitrate.",
                     )
 
                     else -> ProfileCapability(
-                        profile,
-                        codec,
-                        true,
-                        null,
+                        profile = profile,
+                        codec = encoder.codec,
+                        available = true,
+                        unavailableReason = null,
                         constrainedHighSpeed = !regularSupported && highSpeedSupported,
+                        encoderName = encoder.encoderName,
+                        bitrate = encoder.bitrate,
                     )
                 }
             }
@@ -123,10 +121,16 @@ class CameraCapabilityProbe(context: Context) {
             .roundToInt()
     }
 
-    private fun chooseCodec(encoders: List<EncoderSupport>, profile: QualityProfile): VideoCodec? =
-        listOf(VideoCodec.HEVC, VideoCodec.AVC).firstOrNull { codec ->
-            encoders.any { it.codec == codec && it.supports(profile) }
+    private fun chooseEncoder(encoders: List<EncoderSupport>, profile: QualityProfile): EncoderChoice? {
+        for (codec in listOf(VideoCodec.HEVC, VideoCodec.AVC)) {
+            for (encoder in encoders) {
+                if (encoder.codec != codec) continue
+                val bitrate = encoder.bitrateFor(profile) ?: continue
+                return EncoderChoice(codec, encoder.encoderName, bitrate)
+            }
         }
+        return null
+    }
 
     private fun lensLabel(lensFacing: Int): String = when (lensFacing) {
         CameraCharacteristics.LENS_FACING_BACK -> "Rear camera"
@@ -136,16 +140,32 @@ class CameraCapabilityProbe(context: Context) {
     }
 }
 
+private data class EncoderChoice(
+    val codec: VideoCodec,
+    val encoderName: String,
+    val bitrate: Int,
+)
+
 internal data class EncoderSupport(
+    val encoderName: String,
     val codec: VideoCodec,
     val capabilities: MediaCodecInfo.VideoCapabilities,
 ) {
-    fun supports(profile: QualityProfile): Boolean =
-        capabilities.areSizeAndRateSupported(
-            profile.width,
-            profile.height,
-            profile.framesPerSecond.toDouble(),
-        )
+    fun bitrateFor(profile: QualityProfile): Int? {
+        if (!capabilities.areSizeAndRateSupported(
+                profile.width,
+                profile.height,
+                profile.framesPerSecond.toDouble(),
+            )
+        ) {
+            return null
+        }
+        val supported = capabilities.bitrateRange
+        val minimum = maxOf(profile.minimumBitrate(codec), supported.lower)
+        val maximum = minOf(profile.maximumBitrate(codec), supported.upper)
+        if (minimum > maximum) return null
+        return profile.targetBitrate(codec).coerceIn(minimum, maximum)
+    }
 }
 
 private object EncoderInventory {
@@ -157,7 +177,7 @@ private object EncoderInventory {
                 try {
                     val videoCapabilities = info.getCapabilitiesForType(codec.mimeType).videoCapabilities
                         ?: return@mapNotNull null
-                    EncoderSupport(codec, videoCapabilities)
+                    EncoderSupport(info.name, codec, videoCapabilities)
                 } catch (_: IllegalArgumentException) {
                     null
                 }

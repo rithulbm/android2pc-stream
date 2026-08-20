@@ -181,6 +181,10 @@ void SrtListener::publish(const ReceiverState state, const ReceiverError error) 
         std::scoped_lock lock(status_mutex_);
         status_.state = state;
         status_.error = error;
+        if (state == ReceiverState::stopped || state == ReceiverState::listening || state == ReceiverState::failed) {
+            status_.connected_device.clear();
+            status_.peer_address.clear();
+        }
         snapshot = status_;
     }
     if (callback_) {
@@ -265,6 +269,14 @@ void SrtListener::run(ReceiverConfig config) noexcept
             continue;
         }
         peer_socket_.store(peer);
+        // These are post-connect options. Set them explicitly on the accepted socket so
+        // receive blocking behavior never depends on listener-option inheritance rules.
+        if (!set_option(peer, SRTO_RCVSYN, synchronous) || !set_option(peer, SRTO_RCVTIMEO, kReceiveTimeoutMs)) {
+            close_socket(peer_socket_);
+            publish(previously_streamed ? ReceiverState::reconnecting : ReceiverState::listening,
+                    ReceiverError::transport);
+            continue;
+        }
         std::array<char, INET_ADDRSTRLEN> peer_host{};
         if (peer_address.sin_family != AF_INET ||
             InetNtopA(AF_INET, &peer_address.sin_addr, peer_host.data(), peer_host.size()) == nullptr ||
@@ -291,9 +303,8 @@ void SrtListener::run(ReceiverConfig config) noexcept
             status_.connected_device = *device_label;
             status_.peer_address = peer_host.data();
         }
-        publish(ReceiverState::streaming);
-        previously_streamed = true;
         std::array<std::uint8_t, kPayloadBytes> packet{};
+        bool media_started = false;
         while (running_.load()) {
             if (now_epoch_seconds() >= config.credential_expires_epoch_seconds) {
                 publish(ReceiverState::failed, ReceiverError::invalid_config);
@@ -329,10 +340,17 @@ void SrtListener::run(ReceiverConfig config) noexcept
                 std::scoped_lock lock(status_mutex_);
                 ++status_.accepted_packets;
             }
+            if (!media_started && sink_.client_connected()) {
+                // Streaming means the authenticated sender is producing valid TS and
+                // OBS's private FFmpeg child is actually attached to the handoff pipe.
+                media_started = true;
+                previously_streamed = true;
+                publish(ReceiverState::streaming);
+            }
         }
         SecureZeroMemory(packet.data(), packet.size());
         close_socket(peer_socket_);
-        if (running_.load()) publish(ReceiverState::reconnecting);
+        if (running_.load()) publish(previously_streamed ? ReceiverState::reconnecting : ReceiverState::listening);
     }
     close_socket(peer_socket_);
     close_socket(listener_socket_);

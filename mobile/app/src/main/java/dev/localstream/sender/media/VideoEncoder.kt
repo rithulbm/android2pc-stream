@@ -19,7 +19,6 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Bundle
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -64,6 +63,7 @@ class VideoEncoder(
 ) : Closeable {
     private val running = AtomicBoolean(false)
     private val normalizer = EncodedVideoNormalizer()
+    private val accessUnitAssembler = EncodedAccessUnitAssembler(EncodedVideoNormalizer.MAX_ACCESS_UNIT_BYTES)
     private val cameraThread = HandlerThread("stream-camera")
     private val encoderThread = HandlerThread("stream-video-output")
     private lateinit var cameraHandler: Handler
@@ -116,28 +116,43 @@ class VideoEncoder(
         try {
             codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
         } catch (_: IllegalStateException) {
-            onFailure(MediaFailure.VIDEO_ENCODER)
+            // A reconnect can race encoder teardown. A failed sync-frame hint is not
+            // itself a terminal codec failure; the codec callback owns that decision.
+            Log.w(TAG, "sync-frame request ignored because encoder is not executing")
         }
     }
 
     @SuppressLint("InlinedApi")
     private fun configureEncoder() {
+        val encoderName = config.capability.encoderName
+            ?: throw IllegalStateException("validated hardware encoder missing")
+        val configuredBitrate = config.capability.bitrate
+            ?: throw IllegalStateException("validated encoder bitrate missing")
+        if (config.capability.codec != config.codec) {
+            throw IllegalStateException("validated encoder codec changed")
+        }
         val mediaFormat = MediaFormat.createVideoFormat(
             config.codec.mimeType,
             config.profile.width,
             config.profile.height,
         ).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, config.profile.targetBitrate(config.codec))
+            setInteger(MediaFormat.KEY_BIT_RATE, configuredBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, config.profile.framesPerSecond)
+            setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, config.profile.framesPerSecond.toFloat())
             setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, KEY_FRAME_INTERVAL_SECONDS)
             setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+            setInteger(MediaFormat.KEY_LATENCY, ENCODER_LATENCY_FRAMES)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
             setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
         }
-        val created = MediaCodec.createEncoderByType(config.codec.mimeType)
+        val created = MediaCodec.createByCodecName(encoderName)
+        if (!created.codecInfo.isEncoder || config.codec.mimeType !in created.codecInfo.supportedTypes) {
+            created.release()
+            throw IllegalStateException("validated hardware encoder is no longer available")
+        }
         val codecCapabilities = created.codecInfo.getCapabilitiesForType(config.codec.mimeType)
         val encoderCapabilities = codecCapabilities.encoderCapabilities
         if (encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true) {
@@ -145,11 +160,6 @@ class VideoEncoder(
                 MediaFormat.KEY_BITRATE_MODE,
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR,
             )
-        }
-        if (Build.VERSION.SDK_INT >= 30 &&
-            codecCapabilities.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
-        ) {
-            mediaFormat.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         }
         val callback = object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
@@ -189,7 +199,8 @@ class VideoEncoder(
         created.start()
         Log.i(
             TAG,
-            "encoder started mime=${config.codec.mimeType} ${config.profile.width}x${config.profile.height}@${config.profile.framesPerSecond}",
+            "encoder started name=$encoderName mime=${config.codec.mimeType} " +
+                "${config.profile.width}x${config.profile.height}@${config.profile.framesPerSecond} bitrate=$configuredBitrate",
         )
     }
 
@@ -200,36 +211,58 @@ class VideoEncoder(
             if (info.offset < 0 || info.size < 0 || info.offset + info.size > source.capacity()) return
             source.position(info.offset)
             source.limit(info.offset + info.size)
-            val bytes = ByteArray(info.size)
-            source.get(bytes)
-            val isConfiguration = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-            val isKeyFrame = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-            if (isConfiguration) {
-                if (!formatProvidedCodecConfig.get()) {
-                    codecConfigParts += bytes.copyOf()
-                    if (!normalizer.setCodecConfiguration(codecConfigParts.toList())) {
-                        Log.i(TAG, "partial in-band codec configuration; waiting for additional CSD")
-                    }
-                }
-            } else {
-                // Some Android encoders provide VPS/SPS/PPS only inside the first keyframe.
-                // Do not abort merely because an out-of-band CSD callback has not arrived.
-                val accessUnit = normalizer.normalizeFrame(bytes, isKeyFrame)
-                if (accessUnit == null) {
-                    Log.w(TAG, "encoder produced an invalid access unit")
-                    if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
-                } else if (!onAccessUnit(accessUnit, info.presentationTimeUs, isKeyFrame)) {
-                    requestKeyFrame()
-                }
+            val fragment = ByteArray(info.size)
+            source.get(fragment)
+            val partialFrame = info.flags and MediaCodec.BUFFER_FLAG_PARTIAL_FRAME != 0
+            val assembled = accessUnitAssembler.offer(
+                bytes = fragment,
+                presentationTimeUs = info.presentationTimeUs,
+                flags = info.flags and MediaCodec.BUFFER_FLAG_PARTIAL_FRAME.inv(),
+                partialFrame = partialFrame,
+            )
+            fragment.fill(0)
+            if (assembled != null) {
+                processEncodedAccessUnit(assembled)
+                assembled.bytes.fill(0)
             }
-            bytes.fill(0)
         } catch (_: RuntimeException) {
+            accessUnitAssembler.clear()
             if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
         } finally {
             try {
                 codec.releaseOutputBuffer(index, false)
             } catch (_: IllegalStateException) {
                 // Cleanup may race a final callback; the codec has already released this buffer.
+            }
+        }
+    }
+
+    private fun processEncodedAccessUnit(unit: EncodedAccessUnit) {
+        val isConfiguration = unit.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+        val isKeyFrame = unit.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+        if (isConfiguration) {
+            if (!formatProvidedCodecConfig.get()) {
+                codecConfigParts += unit.bytes.copyOf()
+                if (!normalizer.setCodecConfiguration(codecConfigParts.toList())) {
+                    Log.i(TAG, "partial in-band codec configuration; waiting for additional CSD")
+                }
+            }
+            return
+        }
+
+        // Some Android encoders provide VPS/SPS/PPS only inside the first keyframe.
+        // Do not abort merely because an out-of-band CSD callback has not arrived.
+        val accessUnit = normalizer.normalizeFrame(unit.bytes, isKeyFrame)
+        if (accessUnit == null) {
+            Log.w(TAG, "encoder produced an invalid access unit")
+            if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
+        } else {
+            try {
+                if (!onAccessUnit(accessUnit, unit.presentationTimeUs, isKeyFrame)) {
+                    requestKeyFrame()
+                }
+            } finally {
+                accessUnit.fill(0)
             }
         }
     }
@@ -407,6 +440,7 @@ class VideoEncoder(
         captureFpsRange = null
         replaceCodecConfigParts(emptyList())
         formatProvidedCodecConfig.set(false)
+        accessUnitAssembler.clear()
         normalizer.clear()
         stopThread(cameraThread)
         stopThread(encoderThread)
@@ -426,6 +460,7 @@ class VideoEncoder(
         private const val TAG = "VideoEncoder"
         private const val KEY_FRAME_INTERVAL_SECONDS = 2f
         private const val KEY_FRAME_REQUEST_INTERVAL_NS = 500_000_000L
+        private const val ENCODER_LATENCY_FRAMES = 1
         private const val CAMERA_START_TIMEOUT_SECONDS = 5L
         private const val THREAD_JOIN_TIMEOUT_MILLISECONDS = 2_000L
         private const val MAX_CODEC_CONFIGURATION_BYTES = 256 * 1024

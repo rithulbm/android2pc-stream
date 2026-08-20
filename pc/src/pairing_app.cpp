@@ -37,6 +37,7 @@ constexpr UINT kActivateWindowMessage = WM_APP + 2;
 constexpr UINT kShowQrMessage = WM_APP + 3;
 constexpr UINT kReceiverStatusMessage = WM_APP + 4;
 constexpr UINT kTrayIconId = 1;
+constexpr int kAppIconResource = 101;
 constexpr int kControlNetwork = 101;
 constexpr int kControlLabel = 102;
 constexpr int kControlPort = 103;
@@ -50,6 +51,9 @@ constexpr int kTrayExit = 203;
 constexpr std::uint16_t kReceiverPort = 9000;
 constexpr std::uint64_t kCredentialLifetimeSeconds = 365ULL * 24ULL * 60ULL * 60ULL;
 constexpr std::uint64_t kQrLifetimeSeconds = 10ULL * 60ULL;
+constexpr RECT kPairingPaintArea{30, 286, 356, 664};
+constexpr RECT kCountdownPaintArea{34, 630, 352, 662};
+constexpr RECT kStatusPaintArea{20, 664, 680, 724};
 
 struct CurrentUserPipeIdentity final {
     std::wstring name;
@@ -320,7 +324,12 @@ HWND add_control(HWND parent, DWORD extended_style, const wchar_t *class_name, c
 void set_status(HWND window, AppState &state, std::wstring message)
 {
     state.status = std::move(message);
-    InvalidateRect(window, nullptr, FALSE);
+    InvalidateRect(window, &kStatusPaintArea, FALSE);
+}
+
+void invalidate_pairing_area(HWND window) noexcept
+{
+    InvalidateRect(window, &kPairingPaintArea, FALSE);
 }
 
 std::wstring live_status_text(lcr::PairingReceiverState state)
@@ -431,6 +440,7 @@ void create_pairing_qr(HWND window, AppState &state)
     if (state.pairing_payload.empty()) {
         state.clear_pairing_material();
         set_status(window, state, L"Could not create the pairing QR. Check the settings and try again.");
+        invalidate_pairing_area(window);
         return;
     }
     try {
@@ -439,9 +449,11 @@ void create_pairing_qr(HWND window, AppState &state)
     } catch (...) {
         state.clear_pairing_material();
         set_status(window, state, L"The pairing QR was too large to create.");
+        invalidate_pairing_area(window);
         return;
     }
     set_status(window, state, L"Ready. Scan this QR in Local Camera Sender within 10 minutes.");
+    invalidate_pairing_area(window);
     MessageBeep(MB_OK);
 }
 
@@ -803,11 +815,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         break;
     case WM_TIMER:
         if (wparam == kCountdownTimer) {
-            if (state != nullptr && state->qr && state->qr_expires <= lcr::now_epoch_seconds()) {
-                state->clear_pairing_material();
-                state->status = L"QR expired. Your saved receiver settings are still ready.";
+            if (state != nullptr && state->qr) {
+                if (state->qr_expires <= lcr::now_epoch_seconds()) {
+                    state->clear_pairing_material();
+                    set_status(window, *state, L"QR expired. Your saved receiver settings are still ready.");
+                    invalidate_pairing_area(window);
+                } else {
+                    InvalidateRect(window, &kCountdownPaintArea, FALSE);
+                }
             }
-            InvalidateRect(window, nullptr, FALSE);
             return 0;
         }
         break;
@@ -843,7 +859,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case kReceiverStatusMessage:
         if (state != nullptr && wparam <= static_cast<WPARAM>(lcr::PairingReceiverState::failed)) {
             const auto receiver_state = static_cast<lcr::PairingReceiverState>(wparam);
-            if (receiver_state == lcr::PairingReceiverState::streaming) state->clear_pairing_material();
+            if (receiver_state == lcr::PairingReceiverState::streaming) {
+                state->clear_pairing_material();
+                invalidate_pairing_area(window);
+            }
             set_status(window, *state, live_status_text(receiver_state));
         }
         return 0;
@@ -910,14 +929,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     window_class.lpfnWndProc = window_proc;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    window_class.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
+    HICON app_icon = LoadIconW(instance, MAKEINTRESOURCEW(kAppIconResource));
+    if (app_icon == nullptr) app_icon = LoadIconW(nullptr, IDI_APPLICATION);
+    window_class.hIcon = app_icon;
+    window_class.hIconSm = app_icon;
     window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     window_class.lpszClassName = kWindowClass;
     if (RegisterClassExW(&window_class) == 0) return 1;
     auto state = std::make_unique<AppState>();
     HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle,
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 700, 770, nullptr, nullptr, instance, state.get());
     if (window == nullptr) { CloseHandle(instance_mutex); return 1; }
     if (!background_start) {

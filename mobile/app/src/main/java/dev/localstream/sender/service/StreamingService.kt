@@ -65,6 +65,7 @@ class StreamingService : Service() {
     private var thermalDowngradeInProgress = false
     private var wakeLockRenewAtElapsedMilliseconds = 0L
     private var credentialExpiresAtEpochSeconds = 0L
+    private var lastNotificationText: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -258,15 +259,27 @@ class StreamingService : Service() {
         val activePipeline = pipeline ?: return
         renewWakeLockIfNeeded()
         val profile = selectedProfile?.displayName
-        when (activePipeline.transportStatus()) {
+        val transportStatus = activePipeline.transportStatus()
+        when (transportStatus) {
             TransportStatus.STOPPED,
             TransportStatus.CONNECTING,
-            TransportStatus.NEEDS_KEY_FRAME,
             -> {
                 stateMachine.handle(StreamEvent.RetryConnecting(stateMachine.snapshot().generation))
                 StreamingSessionRegistry.publish(
                     PublicStreamSnapshot(PublicStreamState.CONNECTING, "Connecting…", profile),
                 )
+                updateNotification(profile?.let { "Connecting… · $it" } ?: "Connecting…")
+            }
+
+            TransportStatus.NEEDS_KEY_FRAME -> {
+                // Native transport has completed SRT setup and intentionally discarded
+                // all pre-connect media. Ask the encoder for a fresh IDR until one arrives.
+                activePipeline.requestKeyFrame()
+                stateMachine.handle(StreamEvent.RetryConnecting(stateMachine.snapshot().generation))
+                StreamingSessionRegistry.publish(
+                    PublicStreamSnapshot(PublicStreamState.CONNECTING, "Starting video…", profile),
+                )
+                updateNotification(profile?.let { "Starting video… · $it" } ?: "Starting video…")
             }
 
             TransportStatus.CONNECTED -> {
@@ -274,6 +287,7 @@ class StreamingService : Service() {
                 StreamingSessionRegistry.publish(
                     PublicStreamSnapshot(PublicStreamState.STREAMING, "Streaming", profile),
                 )
+                updateNotification(profile?.let { "Streaming · $it" } ?: "Streaming")
             }
 
             TransportStatus.RECONNECTING -> {
@@ -281,6 +295,7 @@ class StreamingService : Service() {
                 StreamingSessionRegistry.publish(
                     PublicStreamSnapshot(PublicStreamState.RECONNECTING, "Reconnecting…", profile),
                 )
+                updateNotification(profile?.let { "Reconnecting… · $it" } ?: "Reconnecting…")
             }
 
             TransportStatus.AUTHENTICATION_FAILED -> {
@@ -298,10 +313,16 @@ class StreamingService : Service() {
                 return
             }
         }
-        highQueueSamples = if (activePipeline.queuePercent() >= HIGH_QUEUE_PERCENT) highQueueSamples + 1 else 0
-        if (highQueueSamples >= HIGH_QUEUE_SAMPLE_LIMIT) {
+        if (transportStatus == TransportStatus.CONNECTED) {
+            highQueueSamples = if (activePipeline.queuePercent() >= HIGH_QUEUE_PERCENT) highQueueSamples + 1 else 0
+            if (highQueueSamples >= HIGH_QUEUE_SAMPLE_LIMIT) {
+                highQueueSamples = 0
+                restartAtLowerQuality("Network is congested. Lowering quality…")
+            }
+        } else {
+            // A queue that grows before connection/reconnection is not evidence of
+            // throughput congestion and must not trigger a quality downgrade.
             highQueueSamples = 0
-            restartAtLowerQuality("Network is congested. Lowering quality…")
         }
     }
 
@@ -375,6 +396,7 @@ class StreamingService : Service() {
                 StreamingSessionRegistry.publish(
                     PublicStreamSnapshot(PublicStreamState.RECONNECTING, "Wi-Fi disconnected. Trying again…", selectedProfile?.displayName),
                 )
+                updateNotification("Wi-Fi disconnected. Reconnecting…")
             }
 
             override fun onAvailable(network: Network) {
@@ -464,6 +486,7 @@ class StreamingService : Service() {
         wakeLock = null
         credentialExpiresAtEpochSeconds = 0L
         startRequested.set(false)
+        lastNotificationText = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stateMachine.handle(StreamEvent.CleanupComplete(stoppingSnapshot.generation))
         StreamingSessionRegistry.publish(PublicStreamSnapshot(state, message))
@@ -507,6 +530,8 @@ class StreamingService : Service() {
     }
 
     private fun updateNotification(text: String) {
+        if (lastNotificationText == text) return
+        lastNotificationText = text
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
     }
 

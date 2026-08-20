@@ -45,13 +45,28 @@ class NativeTransport private constructor(private var handle: Long) : Closeable 
             accessUnit.isNotEmpty() &&
             nativeWriteAudio(handle, accessUnit, presentationTimeUs)
 
-    fun status(): TransportStatus =
-        TransportStatus.entries.getOrElse(nativeStatus(handle)) { TransportStatus.FAILED }
+    fun status(): TransportStatus {
+        val current = handle
+        return if (current == 0L) {
+            TransportStatus.STOPPED
+        } else {
+            TransportStatus.entries.getOrElse(nativeStatus(current)) { TransportStatus.FAILED }
+        }
+    }
 
-    fun error(): TransportError =
-        TransportError.entries.getOrElse(nativeError(handle)) { TransportError.INVALID_CONFIGURATION }
+    fun error(): TransportError {
+        val current = handle
+        return if (current == 0L) {
+            TransportError.NONE
+        } else {
+            TransportError.entries.getOrElse(nativeError(current)) { TransportError.INVALID_CONFIGURATION }
+        }
+    }
 
-    fun queuePercent(): Int = nativeQueuePercent(handle).coerceIn(0, 100)
+    fun queuePercent(): Int {
+        val current = handle
+        return if (current == 0L) 0 else nativeQueuePercent(current).coerceIn(0, 100)
+    }
 
     fun stop() {
         val current = handle
