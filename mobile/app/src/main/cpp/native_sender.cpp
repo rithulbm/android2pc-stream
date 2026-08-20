@@ -256,11 +256,10 @@ void NativeSender::worker_main() {
 
         socket_.store(connected_socket);
         error_.store(SenderError::kNone);
-        status_.store(SenderStatus::kNeedsKeyFrame);
-        // Drop every packet produced before this exact connection became usable. The
-        // queue and video_started_ flag are reset under the producer's mux lock so a
-        // decoder can never observe mixed continuity-counter/timestamp epochs.
+        // First make the queue/mux epoch clean while producers still see Connecting or
+        // Reconnecting and therefore drop frames. Only then expose the keyframe demand.
         reset_mux_after_disconnect();
+        status_.store(SenderStatus::kNeedsKeyFrame);
 
         Packet packet;
         bool send_failed = false;
