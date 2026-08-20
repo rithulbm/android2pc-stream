@@ -86,7 +86,7 @@ class VideoEncoder(
     }
 
     fun start(): Boolean {
-        if (!running.compare_exchange_strong(expected = false, new = true)) return true
+        if (!running.compareAndSet(false, true)) return true
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             running.set(false)
             onFailure(MediaFailure.CAMERA_PERMISSION)
@@ -114,8 +114,6 @@ class VideoEncoder(
         try {
             codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
         } catch (_: IllegalStateException) {
-            // A reconnect can race encoder teardown. A failed sync-frame hint is not
-            // itself a terminal codec failure; the codec callback owns that decision.
             Log.w(TAG, "sync-frame request ignored because encoder is not executing")
         }
     }
@@ -262,8 +260,6 @@ class VideoEncoder(
         }
 
         if (accessUnit.keyFrame && !normalizer.hasCodecConfiguration()) {
-            // Never start a decoder epoch with an IDR/CRA that cannot initialize a fresh decoder.
-            // A late output-format callback or the next in-band keyframe can still complete the cache.
             Log.w(TAG, "dropping keyframe until complete decoder parameter sets are available")
             accessUnit.bytes.fill(0)
             requestKeyFrame()
