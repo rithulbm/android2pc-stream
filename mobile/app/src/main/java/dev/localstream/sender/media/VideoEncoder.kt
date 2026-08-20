@@ -19,7 +19,6 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Bundle
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -116,7 +115,9 @@ class VideoEncoder(
         try {
             codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
         } catch (_: IllegalStateException) {
-            onFailure(MediaFailure.VIDEO_ENCODER)
+            // A reconnect can race encoder teardown. A failed sync-frame hint is not
+            // itself a terminal codec failure; the codec callback owns that decision.
+            Log.w(TAG, "sync-frame request ignored because encoder is not executing")
         }
     }
 
@@ -130,6 +131,7 @@ class VideoEncoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, config.profile.targetBitrate(config.codec))
             setInteger(MediaFormat.KEY_FRAME_RATE, config.profile.framesPerSecond)
+            setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, config.profile.framesPerSecond.toFloat())
             setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, KEY_FRAME_INTERVAL_SECONDS)
             setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
@@ -145,11 +147,6 @@ class VideoEncoder(
                 MediaFormat.KEY_BITRATE_MODE,
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR,
             )
-        }
-        if (Build.VERSION.SDK_INT >= 30 &&
-            codecCapabilities.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
-        ) {
-            mediaFormat.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         }
         val callback = object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
