@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
-      - fix/stream-pipeline-hardening
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -53,8 +51,6 @@ jobs:
     name: Android tests and signed release APK
     runs-on: windows-2022
     timeout-minutes: 90
-    permissions:
-      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -75,28 +71,6 @@ jobs:
           cmdline-tools-version: 14742923
           packages: "platform-tools platforms;android-37.0 build-tools;37.0.0 ndk;29.0.14206865 cmake;3.31.6"
           log-accepted-android-sdk-licenses: true
-
-      # One-time repair for the hardening branch. The generated hashes are
-      # committed below, then this step is removed once the branch is normalized.
-      - name: Normalize Gradle verification metadata
-        if: github.ref != 'refs/heads/main'
-        working-directory: mobile
-        shell: pwsh
-        run: .\gradlew.bat --no-configuration-cache --no-daemon --write-verification-metadata sha256 help
-
-      - name: Commit normalized verification metadata
-        if: github.event_name == 'push' && github.ref == 'refs/heads/fix/stream-pipeline-hardening'
-        shell: pwsh
-        run: |
-          git add mobile/gradle/verification-metadata.xml
-          if (git diff --cached --quiet) {
-            Write-Host "Gradle verification metadata is already normalized."
-            exit 0
-          }
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Normalize Gradle verification metadata"
-          git push origin HEAD:fix/stream-pipeline-hardening
 
       - name: Unit tests and release assemble
         working-directory: mobile
