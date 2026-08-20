@@ -15,6 +15,7 @@ DisableDirPage=yes
 DisableProgramGroupPage=yes
 UninstallDisplayName={#AppName} for OBS Studio
 UninstallDisplayIcon={app}\bin\64bit\LocalCameraReceiver.exe
+SetupIconFile=..\build\generated\app.ico
 OutputDir=..\..
 OutputBaseFilename=LocalCameraReceiverSetup
 Compression=lzma2/ultra64
