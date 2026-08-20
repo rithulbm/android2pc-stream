@@ -44,8 +44,12 @@ jobs:
             Write-Host "OK $path"
           }
 
-      - name: Run CLI tests
+      - name: Run CLI and release-consistency tests
         run: node cli/test/cli.test.js
+
+      - name: Validate npm package contents
+        working-directory: cli
+        run: npm pack --dry-run
 
   android:
     name: Android tests and signed release APK
@@ -226,7 +230,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git add LocalCameraSender.apk LocalCameraReceiverSetup.exe SHA256SUMS.txt README.md cli/lib/config.js
+          git add LocalCameraSender.apk LocalCameraReceiverSetup.exe SHA256SUMS.txt README.md
           if git diff --cached --quiet; then
             echo "Repository-root downloads are already current."
             exit 0
