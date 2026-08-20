@@ -24,6 +24,8 @@ public:
     decltype(&::obs_data_set_default_string) data_set_default_string = nullptr;
     decltype(&::obs_source_create_private) source_create_private = nullptr;
     decltype(&::obs_source_release) source_release = nullptr;
+    decltype(&::obs_source_get_settings) source_get_settings = nullptr;
+    decltype(&::obs_source_update) source_update = nullptr;
     decltype(&::obs_source_add_active_child) source_add_active_child = nullptr;
     decltype(&::obs_source_remove_active_child) source_remove_active_child = nullptr;
     decltype(&::obs_source_video_render) source_video_render = nullptr;
