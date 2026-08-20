@@ -60,7 +60,10 @@ async function runTests() {
   const sums = readRepo('SHA256SUMS.txt')
     .trim()
     .split(/\r?\n/)
-    .map((line) => line.trim().split(/\s+/, 2));
+    .map((line) => {
+      const [hash, filename] = line.trim().split(/\s+/, 2);
+      return [filename, hash];
+    });
   const expectedRootHash = new Map(sums).get(BINARY_NAME);
   assert.match(expectedRootHash || '', /^[0-9A-Fa-f]{64}$/);
 
