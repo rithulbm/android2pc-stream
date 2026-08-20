@@ -67,6 +67,18 @@ jobs:
           packages: "platform-tools platforms;android-37.0 build-tools;37.0.0 ndk;29.0.14206865 cmake;3.31.6"
           log-accepted-android-sdk-licenses: true
 
+      - name: Refresh verification metadata for diagnosis
+        working-directory: mobile
+        shell: pwsh
+        run: |
+          .\gradlew.bat --no-configuration-cache --no-daemon --write-verification-metadata sha256 help
+          Get-ChildItem -Path "$HOME\.gradle\caches" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'guava-parent-33.4.0-jre.pom' -or $_.Name -eq 'junit-bom-5.11.0-M2.module' } |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              Write-Host "VERIFICATION_SHA256 $($_.Name) $hash"
+            }
+
       - name: Unit tests and release assemble
         working-directory: mobile
         shell: pwsh
