@@ -13,12 +13,10 @@ if (command === 'prepare') {
     throw new Error(`Repository license is missing: ${repositoryLicense}`);
   }
   fs.copyFileSync(repositoryLicense, packageLicense);
-  process.stdout.write('Prepared canonical LICENSE for npm package.\n');
 } else if (command === 'cleanup') {
   if (fs.existsSync(packageLicense)) {
     fs.unlinkSync(packageLicense);
   }
-  process.stdout.write('Cleaned temporary npm LICENSE copy.\n');
 } else {
   throw new Error('Usage: node scripts/package-license.js <prepare|cleanup>');
 }
