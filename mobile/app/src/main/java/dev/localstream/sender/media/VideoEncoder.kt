@@ -124,13 +124,20 @@ class VideoEncoder(
 
     @SuppressLint("InlinedApi")
     private fun configureEncoder() {
+        val encoderName = config.capability.encoderName
+            ?: throw IllegalStateException("validated hardware encoder missing")
+        val configuredBitrate = config.capability.bitrate
+            ?: throw IllegalStateException("validated encoder bitrate missing")
+        if (config.capability.codec != config.codec) {
+            throw IllegalStateException("validated encoder codec changed")
+        }
         val mediaFormat = MediaFormat.createVideoFormat(
             config.codec.mimeType,
             config.profile.width,
             config.profile.height,
         ).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, config.profile.targetBitrate(config.codec))
+            setInteger(MediaFormat.KEY_BIT_RATE, configuredBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, config.profile.framesPerSecond)
             setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, config.profile.framesPerSecond.toFloat())
             setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, KEY_FRAME_INTERVAL_SECONDS)
@@ -141,7 +148,11 @@ class VideoEncoder(
             setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
         }
-        val created = MediaCodec.createEncoderByType(config.codec.mimeType)
+        val created = MediaCodec.createByCodecName(encoderName)
+        if (!created.codecInfo.isEncoder || config.codec.mimeType !in created.codecInfo.supportedTypes) {
+            created.release()
+            throw IllegalStateException("validated hardware encoder is no longer available")
+        }
         val codecCapabilities = created.codecInfo.getCapabilitiesForType(config.codec.mimeType)
         val encoderCapabilities = codecCapabilities.encoderCapabilities
         if (encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true) {
@@ -188,7 +199,8 @@ class VideoEncoder(
         created.start()
         Log.i(
             TAG,
-            "encoder started mime=${config.codec.mimeType} ${config.profile.width}x${config.profile.height}@${config.profile.framesPerSecond}",
+            "encoder started name=$encoderName mime=${config.codec.mimeType} " +
+                "${config.profile.width}x${config.profile.height}@${config.profile.framesPerSecond} bitrate=$configuredBitrate",
         )
     }
 
