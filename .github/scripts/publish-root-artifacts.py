@@ -14,7 +14,6 @@ ANDROID_DESTINATION = ROOT / "LocalCameraSender.apk"
 WINDOWS_DESTINATION = ROOT / "LocalCameraReceiverSetup.exe"
 CHECKSUMS = ROOT / "SHA256SUMS.txt"
 README = ROOT / "README.md"
-CLI_CONFIG = ROOT / "cli" / "lib" / "config.js"
 
 
 def sha256(path: Path) -> str:
@@ -65,15 +64,9 @@ def main() -> int:
     )
     README.write_text(readme, encoding="utf-8", newline="\n")
 
-    cli_config = CLI_CONFIG.read_text(encoding="utf-8")
-    cli_config = replace_exact(
-        cli_config,
-        r"const EXPECTED_SHA256 = '[0-9a-fA-F]{64}';",
-        f"const EXPECTED_SHA256 = '{windows_hash.lower()}';",
-        "CLI installer hash",
-    )
-    CLI_CONFIG.write_text(cli_config, encoding="utf-8", newline="\n")
-
+    # Deliberately do not rewrite cli/lib/config.js here. Published npm package
+    # versions pin immutable installer commits and checksums; mutable root builds
+    # must never change the integrity contract of an already-published CLI.
     print(f"Android SHA-256: {android_hash.upper()}")
     print(f"Windows SHA-256: {windows_hash.upper()}")
     return 0
