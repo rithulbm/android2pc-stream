@@ -81,6 +81,7 @@ bool NamedPipeSink::start()
     if (worker_.joinable()) {
         worker_.join();
     }
+    restart_transport_.store(false);
     queue_.reset();
     worker_ = std::thread(&NamedPipeSink::run, this);
     return true;
@@ -89,6 +90,7 @@ bool NamedPipeSink::start()
 void NamedPipeSink::stop() noexcept
 {
     running_.store(false);
+    restart_transport_.store(false);
     queue_.cancel();
     const auto raw = pipe_.exchange(nullptr);
     if (raw != nullptr && raw != INVALID_HANDLE_VALUE) {
@@ -105,7 +107,15 @@ void NamedPipeSink::stop() noexcept
 
 bool NamedPipeSink::enqueue(const std::span<const std::uint8_t> packet)
 {
-    return running_.load() && queue_.push(packet);
+    if (!running_.load()) return false;
+    if (restart_transport_.exchange(false)) {
+        // The decoder pipe disappeared while media was live. Reject one TS group so
+        // SrtListener tears down the peer. The sender then reconnects with a fresh
+        // keyframe and transport tables instead of feeding a new decoder mid-GOP.
+        queue_.clear();
+        return false;
+    }
+    return queue_.push(packet);
 }
 
 const std::wstring &NamedPipeSink::pipe_name() const noexcept
@@ -163,6 +173,8 @@ void NamedPipeSink::run() noexcept
                 }
                 SecureZeroMemory(packet->data(), packet->size());
                 if (pipe_broken) {
+                    queue_.clear();
+                    restart_transport_.store(true);
                     break;
                 }
             }
