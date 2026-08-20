@@ -62,7 +62,7 @@ class VideoEncoder(
     private val onFailure: (MediaFailure) -> Unit,
 ) : Closeable {
     private val running = AtomicBoolean(false)
-    private val normalizer = EncodedVideoNormalizer()
+    private val normalizer = EncodedVideoNormalizer(config.codec)
     private val accessUnitAssembler = EncodedAccessUnitAssembler(EncodedVideoNormalizer.MAX_ACCESS_UNIT_BYTES)
     private val cameraThread = HandlerThread("stream-camera")
     private val encoderThread = HandlerThread("stream-video-output")
@@ -77,8 +77,6 @@ class VideoEncoder(
     private var inputSurface: Surface? = null
     private var captureFpsRange: Range<Int>? = null
     private var lastKeyFrameRequestNs = 0L
-    private val codecConfigParts = mutableListOf<ByteArray>()
-    private val formatProvidedCodecConfig = AtomicBoolean(false)
     private val availabilityCallback = object : CameraManager.AvailabilityCallback() {
         override fun onCameraUnavailable(cameraId: String) {
             if (cameraId == config.cameraId && running.get() && !cameraOpening && camera == null) {
@@ -88,7 +86,7 @@ class VideoEncoder(
     }
 
     fun start(): Boolean {
-        if (!running.compareAndSet(false, true)) return true
+        if (!running.compare_exchange_strong(expected = false, new = true)) return true
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             running.set(false)
             onFailure(MediaFailure.CAMERA_PERMISSION)
@@ -180,14 +178,21 @@ class VideoEncoder(
                     copyBuffer(format.getByteBuffer("csd-2")),
                 )
                 if (parts.isEmpty()) {
-                    Log.i(TAG, "output format has no CSD; accepting in-band codec configuration")
+                    Log.i(TAG, "output format has no CSD; keyframe parameter-set recovery is armed")
                     return
                 }
-                replaceCodecConfigParts(parts)
-                if (normalizer.setCodecConfiguration(codecConfigParts.toList())) {
-                    formatProvidedCodecConfig.set(true)
-                } else {
-                    Log.w(TAG, "format CSD rejected; accepting in-band codec configuration")
+                try {
+                    if (normalizer.setCodecConfiguration(parts)) {
+                        Log.i(TAG, "captured complete ${config.codec} codec configuration from output format")
+                    } else {
+                        Log.w(
+                            TAG,
+                            "output-format CSD is incomplete or vendor-formatted; " +
+                                "continuing with codec-config and keyframe recovery",
+                        )
+                    }
+                } finally {
+                    parts.forEach { it.fill(0) }
                 }
             }
         }
@@ -239,31 +244,41 @@ class VideoEncoder(
 
     private fun processEncodedAccessUnit(unit: EncodedAccessUnit) {
         val isConfiguration = unit.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-        val isKeyFrame = unit.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+        val keyFrameHint = unit.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
         if (isConfiguration) {
-            if (!formatProvidedCodecConfig.get()) {
-                codecConfigParts += unit.bytes.copyOf()
-                if (!normalizer.setCodecConfiguration(codecConfigParts.toList())) {
-                    Log.i(TAG, "partial in-band codec configuration; waiting for additional CSD")
-                }
+            if (normalizer.setCodecConfiguration(listOf(unit.bytes))) {
+                Log.i(TAG, "captured complete ${config.codec} codec configuration from codec-config output")
+            } else {
+                Log.i(TAG, "codec-config output was partial; preserving it and waiting for remaining parameter sets")
             }
             return
         }
 
-        // Some Android encoders provide VPS/SPS/PPS only inside the first keyframe.
-        // Do not abort merely because an out-of-band CSD callback has not arrived.
-        val accessUnit = normalizer.normalizeFrame(unit.bytes, isKeyFrame)
+        val accessUnit = normalizer.normalizeAccessUnit(unit.bytes, keyFrameHint)
         if (accessUnit == null) {
             Log.w(TAG, "encoder produced an invalid access unit")
             if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
-        } else {
-            try {
-                if (!onAccessUnit(accessUnit, unit.presentationTimeUs, isKeyFrame)) {
-                    requestKeyFrame()
-                }
-            } finally {
-                accessUnit.fill(0)
+            return
+        }
+
+        if (accessUnit.keyFrame && !normalizer.hasCodecConfiguration()) {
+            // Never start a decoder epoch with an IDR/CRA that cannot initialize a fresh decoder.
+            // A late output-format callback or the next in-band keyframe can still complete the cache.
+            Log.w(TAG, "dropping keyframe until complete decoder parameter sets are available")
+            accessUnit.bytes.fill(0)
+            requestKeyFrame()
+            return
+        }
+        if (accessUnit.keyFrame && !keyFrameHint) {
+            Log.i(TAG, "detected random-access frame from NAL type despite missing MediaCodec key-frame flag")
+        }
+
+        try {
+            if (!onAccessUnit(accessUnit.bytes, unit.presentationTimeUs, accessUnit.keyFrame)) {
+                requestKeyFrame()
             }
+        } finally {
+            accessUnit.bytes.fill(0)
         }
     }
 
@@ -382,12 +397,6 @@ class VideoEncoder(
         return ByteArray(duplicate.remaining()).also { duplicate.get(it) }
     }
 
-    private fun replaceCodecConfigParts(parts: List<ByteArray>) {
-        codecConfigParts.forEach { it.fill(0) }
-        codecConfigParts.clear()
-        codecConfigParts += parts
-    }
-
     private fun chooseFpsRange(manager: CameraManager): Range<Int>? {
         val characteristics = manager.getCameraCharacteristics(config.cameraId)
         val target = config.profile.framesPerSecond
@@ -438,8 +447,6 @@ class VideoEncoder(
         inputSurface?.release()
         inputSurface = null
         captureFpsRange = null
-        replaceCodecConfigParts(emptyList())
-        formatProvidedCodecConfig.set(false)
         accessUnitAssembler.clear()
         normalizer.clear()
         stopThread(cameraThread)
