@@ -16,10 +16,10 @@ class EncodedVideoNormalizer(
     private val codec: VideoCodec,
     private val maximumAccessUnitBytes: Int = MAX_ACCESS_UNIT_BYTES,
 ) {
-    private val parameterSets = linkedMapOf<Int, ByteArray>()
+    private val parameterSets = linkedMapOf<Int, List<ByteArray>>()
     private var accessUnitFormat = AccessUnitFormat.UNKNOWN
 
-    fun hasCodecConfiguration(): Boolean = requiredParameterSetTypes().all(parameterSets::containsKey)
+    fun hasCodecConfiguration(): Boolean = requiredParameterSetTypes().all { parameterSets.containsKey(it) }
 
     /**
      * Merges any valid parameter sets found in MediaFormat CSD or BUFFER_FLAG_CODEC_CONFIG buffers.
@@ -44,15 +44,17 @@ class EncodedVideoNormalizer(
      * Normalizes one encoded access unit and independently detects random-access NAL units.
      *
      * Parameter sets observed in-band are cached before the keyframe is emitted. Once the cache
-     * is complete, a canonical VPS/SPS/PPS or SPS/PPS prefix is prepended to every keyframe,
-     * including the first one. Repetition is intentional: a decoder attaching after any reconnect
-     * can start from the next keyframe without depending on a one-time encoder CSD callback.
+     * is complete, a canonical VPS/SPS/PPS or SPS/PPS prefix is prepended to any random-access
+     * frame that does not already carry a complete decoder configuration. A decoder attaching
+     * after any reconnect can therefore start from the next keyframe without depending on a
+     * one-time encoder CSD callback.
      */
     fun normalizeAccessUnit(bytes: ByteArray, keyFrameHint: Boolean): NormalizedVideoAccessUnit? {
         val frame = normalize(bytes) ?: return null
+        val frameHasCompleteConfiguration = containsCompleteParameterSets(frame)
         cacheParameterSets(frame)
         val keyFrame = keyFrameHint || containsRandomAccessNal(frame)
-        if (!keyFrame || !hasCodecConfiguration()) {
+        if (!keyFrame || !hasCodecConfiguration() || frameHasCompleteConfiguration) {
             return NormalizedVideoAccessUnit(frame, keyFrame)
         }
 
@@ -74,7 +76,7 @@ class EncodedVideoNormalizer(
         normalizeAccessUnit(bytes, keyFrame)?.bytes
 
     fun clear() {
-        parameterSets.values.forEach { it.fill(0) }
+        parameterSets.values.flatten().forEach { it.fill(0) }
         parameterSets.clear()
         accessUnitFormat = AccessUnitFormat.UNKNOWN
     }
@@ -103,8 +105,7 @@ class EncodedVideoNormalizer(
             AccessUnitFormat.LENGTH_4,
             AccessUnitFormat.LENGTH_3,
             AccessUnitFormat.LENGTH_2,
-            AccessUnitFormat.LENGTH_1,
-            -> convertLengthPrefixed(bytes, format.lengthBytes, maximumAccessUnitBytes)
+            AccessUnitFormat.LENGTH_1 -> convertLengthPrefixed(bytes, format.lengthBytes, maximumAccessUnitBytes)
             AccessUnitFormat.UNKNOWN -> null
         }
     }
@@ -116,14 +117,15 @@ class EncodedVideoNormalizer(
                 AccessUnitFormat.LENGTH_4,
                 AccessUnitFormat.LENGTH_3,
                 AccessUnitFormat.LENGTH_2,
-                AccessUnitFormat.LENGTH_1,
-                -> accessUnitFormat.takeIf { isValidLengthPrefixed(bytes, accessUnitFormat.lengthBytes) }
+                AccessUnitFormat.LENGTH_1 -> accessUnitFormat.takeIf {
+                    isValidLengthPrefixed(bytes, accessUnitFormat.lengthBytes)
+                }
                 AccessUnitFormat.UNKNOWN -> null
             }
         }
 
-        // Preserve the original AVCC-vs-3-byte-Annex-B protection: a complete 4-byte
-        // length-prefixed unit wins over a leading 00 00 01 byte pattern.
+        // A complete 4-byte length-prefixed stream wins over a leading 00 00 01 byte
+        // pattern, preventing 256-511-byte NAL lengths from being mistaken for Annex-B.
         val detected = when {
             startsWithFourByteStartCode(bytes) && parseAnnexB(bytes) != null -> AccessUnitFormat.ANNEX_B
             isValidLengthPrefixed(bytes, 4) -> AccessUnitFormat.LENGTH_4
@@ -139,7 +141,7 @@ class EncodedVideoNormalizer(
 
     private fun cacheParameterSets(annexB: ByteArray): Boolean {
         val nals = parseAnnexB(annexB) ?: return false
-        var observed = false
+        val observedByType = linkedMapOf<Int, MutableList<ByteArray>>()
         for (nal in nals) {
             val type = nalType(annexB, nal.payloadStart)
             if (type !in requiredParameterSetTypes()) continue
@@ -148,27 +150,46 @@ class EncodedVideoNormalizer(
             val canonical = ByteArray(START_CODE.size + payloadSize)
             START_CODE.copyInto(canonical)
             annexB.copyInto(canonical, START_CODE.size, nal.payloadStart, nal.payloadEnd)
-            parameterSets.put(type, canonical)?.fill(0)
-            observed = true
+            observedByType.getOrPut(type) { mutableListOf() }.add(canonical)
         }
-        return observed
+        if (observedByType.isEmpty()) return false
+
+        for ((type, replacements) in observedByType) {
+            parameterSets.remove(type)?.forEach { it.fill(0) }
+            parameterSets[type] = replacements
+        }
+        return true
+    }
+
+    private fun containsCompleteParameterSets(annexB: ByteArray): Boolean {
+        val nals = parseAnnexB(annexB) ?: return false
+        val present = mutableSetOf<Int>()
+        for (nal in nals) {
+            val type = nalType(annexB, nal.payloadStart)
+            if (type in requiredParameterSetTypes()) present += type
+        }
+        return requiredParameterSetTypes().all { it in present }
     }
 
     private fun buildCodecConfiguration(): ByteArray? {
         if (!hasCodecConfiguration()) return null
         var total = 0
         for (type in requiredParameterSetTypes()) {
-            val part = parameterSets[type] ?: return null
-            if (part.size > MAX_CONFIGURATION_BYTES - total) return null
-            total += part.size
+            val parts = parameterSets[type] ?: return null
+            for (part in parts) {
+                if (part.size > MAX_CONFIGURATION_BYTES - total) return null
+                total += part.size
+            }
         }
         if (total <= 0) return null
         val output = ByteArray(total)
         var offset = 0
         for (type in requiredParameterSetTypes()) {
-            val part = parameterSets[type] ?: return null
-            part.copyInto(output, offset)
-            offset += part.size
+            val parts = parameterSets[type] ?: return null
+            for (part in parts) {
+                part.copyInto(output, offset)
+                offset += part.size
+            }
         }
         return output
     }
