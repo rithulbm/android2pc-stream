@@ -153,6 +153,13 @@ bool NativeSender::write_video(
         access_unit.empty()) {
         return false;
     }
+    if (current_status == SenderStatus::kConnecting || current_status == SenderStatus::kReconnecting) {
+        // The encoder may be running before SRT finishes its handshake. Drop those
+        // frames without backpressuring the encoder; a fresh IDR is requested once
+        // the secure transport transitions to kNeedsKeyFrame.
+        return true;
+    }
+
     std::lock_guard lock(mux_mutex_);
     if (!video_started_) {
         if (!key_frame) {
@@ -188,9 +195,13 @@ bool NativeSender::write_audio(
         access_unit.empty()) {
         return false;
     }
+    if (current_status != SenderStatus::kConnected) {
+        return true;
+    }
+
     std::lock_guard lock(mux_mutex_);
     if (!video_started_) {
-        return false;
+        return true;
     }
     MpegTsMuxer staged = muxer_;
     PacketBatch packets;
