@@ -28,8 +28,7 @@ private:
     std::wstring pipe_name_;
     BoundedPacketQueue queue_;
     std::atomic<bool> running_{false};
-    std::atomic<bool> connected_{false};
-    std::atomic<bool> client_seen_{false};
+    std::atomic<bool> restart_transport_{false};
     std::thread worker_;
     std::atomic<void *> pipe_{nullptr};
 };
