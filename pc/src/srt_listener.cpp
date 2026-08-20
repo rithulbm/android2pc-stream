@@ -340,7 +340,9 @@ void SrtListener::run(ReceiverConfig config) noexcept
                 std::scoped_lock lock(status_mutex_);
                 ++status_.accepted_packets;
             }
-            if (!media_started) {
+            if (!media_started && sink_.client_connected()) {
+                // Streaming means the authenticated sender is producing valid TS and
+                // OBS's private FFmpeg child is actually attached to the handoff pipe.
                 media_started = true;
                 previously_streamed = true;
                 publish(ReceiverState::streaming);
