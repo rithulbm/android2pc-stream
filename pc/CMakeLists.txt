@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.30)
 project(local_camera_receiver VERSION 0.2.0 LANGUAGES C CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "Local Camera Receiver v1 supports 64-bit Windows only")
+    message(FATAL_ERROR "Local Camera Receiver supports 64-bit Windows only")
 endif()
 
 set(CMAKE_C_STANDARD 11)
