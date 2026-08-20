@@ -13,7 +13,12 @@ inline std::string receiver_status_text(const ReceiverStatus &status)
         if (!status.peer_address.empty()) message += " (" + status.peer_address + ")";
         return message;
     }
-    if (status.state == ReceiverState::authenticating) return "Phone found. Checking the secure pairing...";
+    if (status.state == ReceiverState::authenticating) {
+        if (!status.connected_device.empty() && status.accepted_packets > 0) {
+            return "Phone connected securely. Media is arriving; waiting for OBS to decode the first video frame...";
+        }
+        return "Phone found. Checking the secure pairing...";
+    }
     if (status.state == ReceiverState::reconnecting) {
         return status.connected_device.empty()
             ? "Phone disconnected. Reconnecting automatically..."

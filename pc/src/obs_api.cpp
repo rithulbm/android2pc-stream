@@ -40,6 +40,8 @@ bool ObsApi::load() noexcept
         resolve(module_, source_video_render, "obs_source_video_render") &&
         resolve(module_, source_get_width, "obs_source_get_width") &&
         resolve(module_, source_get_height, "obs_source_get_height") &&
+        resolve(module_, source_get_frame, "obs_source_get_frame") &&
+        resolve(module_, source_release_frame, "obs_source_release_frame") &&
         resolve(module_, source_audio_pending, "obs_source_audio_pending") &&
         resolve(module_, source_get_audio_timestamp, "obs_source_get_audio_timestamp") &&
         resolve(module_, source_get_audio_mix, "obs_source_get_audio_mix") &&

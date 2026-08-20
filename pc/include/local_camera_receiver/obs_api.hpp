@@ -31,6 +31,8 @@ public:
     decltype(&::obs_source_video_render) source_video_render = nullptr;
     decltype(&::obs_source_get_width) source_get_width = nullptr;
     decltype(&::obs_source_get_height) source_get_height = nullptr;
+    decltype(&::obs_source_get_frame) source_get_frame = nullptr;
+    decltype(&::obs_source_release_frame) source_release_frame = nullptr;
     decltype(&::obs_source_audio_pending) source_audio_pending = nullptr;
     decltype(&::obs_source_get_audio_timestamp) source_get_audio_timestamp = nullptr;
     decltype(&::obs_source_get_audio_mix) source_get_audio_mix = nullptr;
