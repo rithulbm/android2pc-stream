@@ -64,8 +64,8 @@ npx local-camera-receiver --show-qr
 
 ## Requirements
 
-- **Windows:** Windows 10 or 11 (64-bit)
-- **OBS Studio:** OBS Studio 32.2.1+
+- **Windows:** Windows 10 or 11 x64
+- **OBS Studio:** exactly OBS Studio 32.2.1 x64 for this receiver build
 - **Node.js:** Node.js 18.0.0 or newer
 - **Android Device:** Android 10+ with the [canonical Local Camera Sender APK](../LocalCameraSender.apk)
 
