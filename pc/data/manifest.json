@@ -3,6 +3,6 @@
   "id": "local-camera-receiver",
   "version": "0.2.0",
   "author": "Local Camera Receiver contributors",
-  "description": "Secure local-Wi-Fi Android camera receiver for OBS Studio 32.2.x.",
+  "description": "Secure local-Wi-Fi Android camera receiver for OBS Studio 32.2.2 and newer.",
   "platforms": ["windows-x64"]
 }
