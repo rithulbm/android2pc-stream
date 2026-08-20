@@ -7,15 +7,43 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $pcRoot = Join-Path $repositoryRoot 'pc'
 $buildRoot = Join-Path $pcRoot 'build'
-$cmake = 'C:\Program Files\CMake\bin\cmake.exe'
-$ctest = 'C:\Program Files\CMake\bin\ctest.exe'
-$innoCompiler = Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
 
-foreach ($tool in @($cmake, $ctest, $innoCompiler)) {
-    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
-        throw "Required Windows build tool was not found: $tool"
+function Resolve-BuildTool {
+    param(
+        [Parameter(Mandatory)] [string] $Command,
+        [Parameter(Mandatory)] [string[]] $Candidates
+    )
+
+    $resolved = Get-Command $Command -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $resolved -and (Test-Path -LiteralPath $resolved.Source -PathType Leaf)) {
+        return $resolved.Source
     }
+    foreach ($candidate in $Candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
+            (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return $candidate
+        }
+    }
+    throw "Required Windows build tool was not found: $Command"
 }
+
+$cmake = Resolve-BuildTool -Command 'cmake.exe' -Candidates @(
+    'C:\Program Files\CMake\bin\cmake.exe'
+)
+$ctest = Resolve-BuildTool -Command 'ctest.exe' -Candidates @(
+    'C:\Program Files\CMake\bin\ctest.exe'
+)
+$innoCandidates = @()
+if ($env:LOCALAPPDATA) {
+    $innoCandidates += Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
+}
+if (${env:ProgramFiles(x86)}) {
+    $innoCandidates += Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+}
+if ($env:ProgramFiles) {
+    $innoCandidates += Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+}
+$innoCompiler = Resolve-BuildTool -Command 'ISCC.exe' -Candidates $innoCandidates
 
 & (Join-Path $PSScriptRoot 'bootstrap-windows.ps1')
 
