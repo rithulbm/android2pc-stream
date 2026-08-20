@@ -45,8 +45,9 @@ struct ReceiverStatus final {
 class SrtListener final {
 public:
     using StatusCallback = std::function<void(const ReceiverStatus &)>;
+    using MediaReadyCallback = std::function<bool()>;
 
-    SrtListener(NamedPipeSink &sink, StatusCallback callback);
+    SrtListener(NamedPipeSink &sink, StatusCallback callback, MediaReadyCallback media_ready = {});
     ~SrtListener();
 
     SrtListener(const SrtListener &) = delete;
@@ -62,6 +63,7 @@ private:
 
     NamedPipeSink &sink_;
     StatusCallback callback_;
+    MediaReadyCallback media_ready_;
     mutable std::mutex status_mutex_;
     ReceiverStatus status_{};
     std::atomic<bool> running_{false};

@@ -28,6 +28,7 @@ constexpr char kSourceId[] = "local_camera_receiver_source";
 constexpr char kPipeIdSetting[] = "pipe_id";
 constexpr char kListenHiddenSetting[] = "listen_when_hidden";
 constexpr char kHardwareDecodeSetting[] = "hardware_decode";
+constexpr char kSoftwareDecoderMigrationSetting[] = "software_decoder_migration_v1";
 
 std::string new_uuid() noexcept
 {
@@ -142,7 +143,18 @@ public:
             api.data_set_string(settings, kPipeIdSetting, pipe_id.c_str());
         }
         listen_when_hidden_.store(api.data_get_bool(settings, kListenHiddenSetting));
+
+        // Builds before 0.2.0 could persist hardware decoding as enabled. Changing
+        // the default did not alter those saved OBS source settings, and HEVC/SRT
+        // hardware decode has known reliability problems in OBS. Migrate every
+        // existing/new source exactly once to the reliable software default. A user
+        // can explicitly enable hardware decoding again after this marker is saved.
+        if (!api.data_get_bool(settings, kSoftwareDecoderMigrationSetting)) {
+            api.data_set_bool(settings, kHardwareDecodeSetting, false);
+            api.data_set_bool(settings, kSoftwareDecoderMigrationSetting, true);
+        }
         hardware_decode_.store(api.data_get_bool(settings, kHardwareDecodeSetting));
+
         const std::wstring pipe_name = L"\\\\.\\pipe\\local-camera-receiver-" + std::wstring(pipe_id.begin(), pipe_id.end());
         sink_ = std::make_unique<NamedPipeSink>(pipe_name);
         if (!sink_->start()) return;
@@ -157,7 +169,7 @@ public:
         api.data_set_bool(child_settings, "close_when_inactive", false);
         api.data_set_bool(child_settings, "clear_on_media_end", true);
         api.data_set_bool(child_settings, "hw_decode", hardware_decode_.load());
-        api.data_set_bool(child_settings, "log_changes", false);
+        api.data_set_bool(child_settings, "log_changes", true);
         api.data_set_int(child_settings, "buffering_mb", 1);
         api.data_set_int(child_settings, "reconnect_delay_sec", 1);
         child_ = api.source_create_private("ffmpeg_source", "Local Camera Receiver media", child_settings);
@@ -166,7 +178,9 @@ public:
         if (!api.source_add_active_child(source_, child_)) return;
         child_active_.store(true);
 
-        listener_ = std::make_unique<SrtListener>(*sink_, publish_pairing_helper_status);
+        listener_ = std::make_unique<SrtListener>(
+            *sink_, publish_pairing_helper_status,
+            [this]() noexcept { return decoded_frame_ready(); });
         valid_.store(true);
         watcher_ = std::thread(&ReceiverSource::watch_config, this);
     }
@@ -232,6 +246,17 @@ public:
     }
 
 private:
+    [[nodiscard]] bool decoded_frame_ready() const noexcept
+    {
+        if (child_ == nullptr) return false;
+        auto &api = obs_api();
+        obs_source_frame *frame = api.source_get_frame(child_);
+        if (frame == nullptr) return false;
+        const bool ready = frame->width > 0U && frame->height > 0U;
+        api.source_release_frame(child_, frame);
+        return ready;
+    }
+
     void watch_config() noexcept
     {
         std::filesystem::file_time_type last_write{};
@@ -327,7 +352,7 @@ obs_properties_t *source_properties(void *data)
     obs_property_t *connection = api.properties_add_text(properties, "connection_status", status.c_str(), OBS_TEXT_INFO);
     if (connection != nullptr) {
         api.property_set_long_description(connection,
-            "Only a phone with the saved pairing secret and required AES-256-GCM connection is accepted.");
+            "Streaming is reported only after an authenticated connection is producing valid MPEG-TS and OBS has decoded a video frame.");
     }
     api.properties_add_button2(properties, "refresh_status", "Refresh connection status", refresh_receiver_status, nullptr);
     obs_property_t *info = api.properties_add_text(
@@ -341,7 +366,7 @@ obs_properties_t *source_properties(void *data)
     obs_property_t *hardware = api.properties_add_bool(properties, kHardwareDecodeSetting, "Use hardware decoding");
     if (hardware != nullptr) {
         api.property_set_long_description(hardware,
-            "Off by default for maximum HEVC/SRT compatibility. Enable only if your GPU and OBS decoder path are stable.");
+            "Software decoding is the reliability default for HEVC/SRT. Existing sources are migrated to it once; enable hardware decoding only after the software path works on this PC.");
     }
     api.properties_add_bool(properties, kListenHiddenSetting, "Keep listening when hidden");
     return properties;

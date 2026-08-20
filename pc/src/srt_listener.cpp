@@ -132,8 +132,8 @@ void close_socket(std::atomic<std::int64_t> &slot) noexcept
 
 } // namespace
 
-SrtListener::SrtListener(NamedPipeSink &sink, StatusCallback callback)
-    : sink_(sink), callback_(std::move(callback)) {}
+SrtListener::SrtListener(NamedPipeSink &sink, StatusCallback callback, MediaReadyCallback media_ready)
+    : sink_(sink), callback_(std::move(callback)), media_ready_(std::move(media_ready)) {}
 
 SrtListener::~SrtListener()
 {
@@ -340,9 +340,11 @@ void SrtListener::run(ReceiverConfig config) noexcept
                 std::scoped_lock lock(status_mutex_);
                 ++status_.accepted_packets;
             }
-            if (!media_started && sink_.client_connected()) {
-                // Streaming means the authenticated sender is producing valid TS and
-                // OBS's private FFmpeg child is actually attached to the handoff pipe.
+            const bool decoder_ready = !media_ready_ || media_ready_();
+            if (!media_started && sink_.client_connected() && decoder_ready) {
+                // Streaming means the authenticated sender is producing valid TS,
+                // OBS's private FFmpeg child is attached, and OBS has produced a
+                // decoded video frame. A connected pipe alone is not streaming.
                 media_started = true;
                 previously_streamed = true;
                 publish(ReceiverState::streaming);
