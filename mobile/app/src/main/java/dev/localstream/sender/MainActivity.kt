@@ -379,15 +379,24 @@ class MainActivity : Activity() {
             streamStatus.text = selection.reason
             return
         }
-        startForegroundService(
-            StreamingService.startIntent(
-                this,
-                selectedQuality,
-                camera.cameraId,
-                microphone.isChecked,
-            ),
-        )
-        soundCues.play(UiSoundCue.START)
+        try {
+            startForegroundService(
+                StreamingService.startIntent(
+                    this,
+                    selectedQuality,
+                    camera.cameraId,
+                    microphone.isChecked,
+                ),
+            )
+            soundCues.play(UiSoundCue.START)
+        } catch (_: RuntimeException) {
+            // Android can revoke while-in-use capability or otherwise reject an FGS
+            // start between the permission check and this call. Keep the app alive and
+            // tell the user to retry from the visible activity instead of crashing.
+            pendingStartAfterPermission = false
+            streamStatus.text = "Streaming could not start. Keep the app open and try again."
+            soundCues.play(UiSoundCue.ERROR)
+        }
     }
 
     private fun refreshPairingStatus() {
