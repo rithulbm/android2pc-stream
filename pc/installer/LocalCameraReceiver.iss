@@ -75,6 +75,11 @@ Filename: "{app}\bin\64bit\LocalCameraReceiver.exe"; Parameters: "/background"; 
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Local Camera Receiver (Private UDP 9000)"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveLocalCameraReceiverFirewall"
 
 [Code]
+const
+  MinObsMajor = 32;
+  MinObsMinor = 2;
+  MinObsPatch = 2;
+
 var
   ObsExecutable: String;
 
@@ -127,6 +132,55 @@ begin
     'remoteip=localsubnet edge=no';
 end;
 
+function ReadVersionComponent(var VersionText: String; var Value: Integer): Boolean;
+var
+  DotPosition: Integer;
+  Component: String;
+begin
+  DotPosition := Pos('.', VersionText);
+  if DotPosition = 0 then
+  begin
+    Component := VersionText;
+    VersionText := '';
+  end
+  else
+  begin
+    Component := Copy(VersionText, 1, DotPosition - 1);
+    Delete(VersionText, 1, DotPosition);
+  end;
+
+  Value := StrToIntDef(Component, -1);
+  Result := Value >= 0;
+end;
+
+function IsSupportedObsVersion(VersionText: String): Boolean;
+var
+  MajorVersion: Integer;
+  MinorVersion: Integer;
+  PatchVersion: Integer;
+begin
+  Result := False;
+  if not ReadVersionComponent(VersionText, MajorVersion) then Exit;
+  if not ReadVersionComponent(VersionText, MinorVersion) then Exit;
+  if not ReadVersionComponent(VersionText, PatchVersion) then Exit;
+
+  if MajorVersion > MinObsMajor then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if MajorVersion < MinObsMajor then Exit;
+
+  if MinorVersion > MinObsMinor then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if MinorVersion < MinObsMinor then Exit;
+
+  Result := PatchVersion >= MinObsPatch;
+end;
+
 function InitializeSetup(): Boolean;
 var
   ObsVersion: String;
@@ -135,21 +189,30 @@ begin
   if not FindObsExecutable() then
   begin
     MsgBox(
-      'OBS Studio 32.2.1 was not found. Install or update OBS Studio first, then run this setup again.',
+      'OBS Studio 32.2.2 or newer was not found. Install OBS Studio, then run this setup again.',
       mbError,
       MB_OK);
     Exit;
   end;
 
-  if not GetVersionNumbersString(ObsExecutable, ObsVersion) or
-     (Pos('32.2.1', ObsVersion) <> 1) then
+  if not GetVersionNumbersString(ObsExecutable, ObsVersion) then
   begin
     MsgBox(
-      'This build is verified for OBS Studio 32.2.1. Update OBS Studio to 32.2.1 before installing this source.',
+      'OBS Studio was found, but its version could not be read safely. Reinstall or update OBS Studio, then try again.',
       mbError,
       MB_OK);
     Exit;
   end;
+
+  if not IsSupportedObsVersion(ObsVersion) then
+  begin
+    MsgBox(
+      'Local Camera Receiver requires OBS Studio 32.2.2 or newer. Installed version: ' + ObsVersion + '. Update OBS Studio, then run this setup again.',
+      mbError,
+      MB_OK);
+    Exit;
+  end;
+
   Result := True;
 end;
 
