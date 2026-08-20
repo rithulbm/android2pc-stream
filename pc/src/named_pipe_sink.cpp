@@ -82,6 +82,7 @@ bool NamedPipeSink::start()
         worker_.join();
     }
     restart_transport_.store(false);
+    client_connected_.store(false);
     queue_.reset();
     worker_ = std::thread(&NamedPipeSink::run, this);
     return true;
@@ -91,6 +92,7 @@ void NamedPipeSink::stop() noexcept
 {
     running_.store(false);
     restart_transport_.store(false);
+    client_connected_.store(false);
     queue_.cancel();
     const auto raw = pipe_.exchange(nullptr);
     if (raw != nullptr && raw != INVALID_HANDLE_VALUE) {
@@ -148,6 +150,7 @@ void NamedPipeSink::run() noexcept
         }
         pipe_.store(handle);
         const bool connected = ConnectNamedPipe(handle, nullptr) != FALSE || GetLastError() == ERROR_PIPE_CONNECTED;
+        client_connected_.store(connected);
         if (connected) {
             bool pipe_broken = false;
             while (running_.load()) {
@@ -173,18 +176,21 @@ void NamedPipeSink::run() noexcept
                 }
                 SecureZeroMemory(packet->data(), packet->size());
                 if (pipe_broken) {
+                    client_connected_.store(false);
                     queue_.clear();
                     restart_transport_.store(true);
                     break;
                 }
             }
         }
+        client_connected_.store(false);
         void *expected = handle;
         if (pipe_.compare_exchange_strong(expected, nullptr)) {
             DisconnectNamedPipe(handle);
             CloseHandle(handle);
         }
     }
+    client_connected_.store(false);
 }
 
 } // namespace lcr
