@@ -1,1 +1,1 @@
-101 ICON "app.ico"
+101 ICON "@APP_ICON_PATH@"
