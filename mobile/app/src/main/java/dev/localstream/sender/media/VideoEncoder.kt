@@ -127,6 +127,7 @@ class VideoEncoder(
         if (config.capability.codec != config.codec) {
             throw IllegalStateException("validated encoder codec changed")
         }
+
         val mediaFormat = MediaFormat.createVideoFormat(
             config.codec.mimeType,
             config.profile.width,
@@ -144,11 +145,17 @@ class VideoEncoder(
             setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
         }
-        val created = MediaCodec.createByCodecName(encoderName)
-        if (!created.codecInfo.isEncoder || config.codec.mimeType !in created.codecInfo.supportedTypes) {
-            created.release()
-            throw IllegalStateException("validated hardware encoder is no longer available")
+
+        fun newValidatedCodec(): MediaCodec {
+            val candidate = MediaCodec.createByCodecName(encoderName)
+            if (!candidate.codecInfo.isEncoder || config.codec.mimeType !in candidate.codecInfo.supportedTypes) {
+                candidate.release()
+                throw IllegalStateException("validated hardware encoder is no longer available")
+            }
+            return candidate
         }
+
+        var created = newValidatedCodec()
         val codecCapabilities = created.codecInfo.getCapabilitiesForType(config.codec.mimeType)
         val encoderCapabilities = codecCapabilities.encoderCapabilities
         if (encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true) {
@@ -157,6 +164,7 @@ class VideoEncoder(
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR,
             )
         }
+
         val callback = object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
 
@@ -195,8 +203,31 @@ class VideoEncoder(
             }
         }
         codecCallback = callback
-        created.setCallback(callback, encoderHandler)
-        created.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+
+        val preferredFormat = MediaFormat(mediaFormat).apply {
+            setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
+        }
+        try {
+            created.setCallback(callback, encoderHandler)
+            created.configure(preferredFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            Log.i(TAG, "encoder accepted prepend-header-to-sync-frames")
+        } catch (preferredFailure: RuntimeException) {
+            Log.w(
+                TAG,
+                "encoder rejected optional prepend-header-to-sync-frames; retrying with software parameter-set recovery",
+            )
+            created.release()
+            created = newValidatedCodec()
+            try {
+                created.setCallback(callback, encoderHandler)
+                created.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            } catch (fallbackFailure: RuntimeException) {
+                created.release()
+                fallbackFailure.addSuppressed(preferredFailure)
+                throw fallbackFailure
+            }
+        }
+
         inputSurface = created.createInputSurface()
         codec = created
         created.start()
@@ -252,11 +283,15 @@ class VideoEncoder(
             return
         }
 
+        val hadCodecConfiguration = normalizer.hasCodecConfiguration()
         val accessUnit = normalizer.normalizeAccessUnit(unit.bytes, keyFrameHint)
         if (accessUnit == null) {
             Log.w(TAG, "encoder produced an invalid access unit")
             if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
             return
+        }
+        if (!hadCodecConfiguration && normalizer.hasCodecConfiguration()) {
+            Log.i(TAG, "recovered complete ${config.codec} parameter sets from an in-band access unit")
         }
 
         if (accessUnit.keyFrame && !normalizer.hasCodecConfiguration()) {
