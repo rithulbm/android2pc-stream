@@ -137,26 +137,11 @@ class AudioEncoder(
                     return
                 }
                 buffer.clear()
-                buffer.limit(AAC_PCM_FRAME_BYTES)
-                var bytesReadTotal = 0
-                while (running.get() && bytesReadTotal < AAC_PCM_FRAME_BYTES) {
-                    buffer.position(bytesReadTotal)
-                    val bytesRead = activeRecorder.read(
-                        buffer,
-                        AAC_PCM_FRAME_BYTES - bytesReadTotal,
-                        AudioRecord.READ_BLOCKING,
-                    )
-                    if (bytesRead < 0) {
-                        activeCodec.queueInputBuffer(index, 0, 0, 0, 0)
-                        if (running.get()) onFailure(MediaFailure.AUDIO_CAPTURE)
-                        return
-                    }
-                    if (bytesRead == 0) continue
-                    bytesReadTotal += bytesRead
-                }
-                if (!running.get()) {
+                val bytesRead = activeRecorder.read(buffer, AAC_PCM_FRAME_BYTES, AudioRecord.READ_BLOCKING)
+                if (bytesRead != AAC_PCM_FRAME_BYTES) {
                     activeCodec.queueInputBuffer(index, 0, 0, 0, 0)
-                    break
+                    if (bytesRead < 0 && running.get()) onFailure(MediaFailure.AUDIO_CAPTURE)
+                    continue
                 }
 
                 val blockStartFrame = totalSampleFramesRead
