@@ -44,8 +44,39 @@ jobs:
             Write-Host "OK $path"
           }
 
-      - name: Run CLI tests
+      - name: Run CLI and release-consistency tests
         run: node cli/test/cli.test.js
+
+      - name: Build and validate npm package
+        working-directory: cli
+        shell: pwsh
+        run: |
+          $output = @(npm pack --json)
+          if ($LASTEXITCODE -ne 0) { throw "npm pack failed with exit code $LASTEXITCODE" }
+
+          $start = -1
+          $end = -1
+          for ($i = 0; $i -lt $output.Count; $i++) {
+            if ($output[$i].Trim() -eq '[') { $start = $i; break }
+          }
+          for ($i = $output.Count - 1; $i -ge 0; $i--) {
+            if ($output[$i].Trim() -eq ']') { $end = $i; break }
+          }
+          if ($start -lt 0 -or $end -lt $start) {
+            throw "npm pack did not emit a parseable JSON array."
+          }
+
+          $payload = ($output[$start..$end] -join "`n")
+          $package = $payload | ConvertFrom-Json
+          if ($package.Count -ne 1) { throw "Expected exactly one npm package result." }
+          $paths = @($package[0].files | ForEach-Object { $_.path })
+          foreach ($required in @('LICENSE', 'README.md', 'bin/cli.js', 'lib/config.js', 'package.json')) {
+            if ($required -notin $paths) { throw "npm package is missing required file: $required" }
+          }
+          if (Test-Path -LiteralPath 'LICENSE') {
+            throw "postpack did not clean the temporary cli/LICENSE copy."
+          }
+          Remove-Item -LiteralPath $package[0].filename -Force
 
   android:
     name: Android tests and signed release APK
@@ -226,7 +257,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git add LocalCameraSender.apk LocalCameraReceiverSetup.exe SHA256SUMS.txt README.md cli/lib/config.js
+          git add LocalCameraSender.apk LocalCameraReceiverSetup.exe SHA256SUMS.txt README.md
           if git diff --cached --quiet; then
             echo "Repository-root downloads are already current."
             exit 0

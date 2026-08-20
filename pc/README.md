@@ -71,11 +71,12 @@ in-memory data. Credentials last at most one year; QR import lasts ten minutes.
 - Plaintext and AES-CTR mode 1 are rejected; there is no silent downgrade.
 - Only non-empty, bounded groups of complete 188-byte MPEG-TS packets with
   valid sync bytes enter the named pipe.
-- The pipe rejects remote clients, uses a current-user-only security descriptor,
+- The media pipe rejects remote clients, uses a current-user-only security descriptor,
   and has bounded packet/byte queues with cancellation and backpressure.
-- The helper control pipe uses the current Windows SID in its name, rejects
-  remote clients, applies a current-user-only DACL, and recognizes one exact
-  bounded command. No pairing secret crosses this control pipe.
+- The helper control/status pipe uses the current Windows SID in its name,
+  rejects remote clients, applies a current-user-only DACL, and accepts only
+  bounded protocol messages for showing the QR or propagating receiver state.
+  No pairing secret crosses this control/status pipe.
 - A sanitized phone model label is accepted for display only after AES-GCM key
   states are secured. It is bounded to 48 safe ASCII characters and contains no
   serial number, account, or advertising identifier.
@@ -117,10 +118,11 @@ MSVC.
 Native unit tests cover configuration validation, QR/credential expiry,
 URI encoding, strict binary parsing, random generation, DPAPI round-trips and
 tamper rejection, queue bounds/backpressure/cancellation, adapter ranking and
-saved-virtual-adapter migration, device stream-ID validation, the exact helper
-control command, status copy, and the OBS source output contract. The pairing
-GUI is also exercised as a real Windows app to confirm physical Wi-Fi selection,
-DPAPI save, in-memory QR rendering, saved settings, and its tray/finish path.
+saved-virtual-adapter migration, device stream-ID validation, bounded helper
+control/status messages, live status copy, and the OBS source output contract.
+The pairing GUI is also exercised as a real Windows app to confirm physical
+Wi-Fi selection, DPAPI save, in-memory QR rendering, saved settings, and its
+tray/finish path.
 
 The original 0.1.0 installation exposed a precise OBS load error because a
 composite source incorrectly advertised direct audio output. Version 0.2.0

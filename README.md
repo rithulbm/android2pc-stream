@@ -19,10 +19,11 @@ Local Camera Sender is a two-part, local-Wi-Fi camera system:
 ## Download
 
 The ready-to-use files are kept at the repository root. Every successful `main`
-CI build refreshes both binaries, `SHA256SUMS.txt`, the hashes below, and the
-CLI's pinned installer hash only after Android, Windows, and CLI validation pass.
-Pull requests publish downloadable workflow artifacts without replacing these
-canonical root files.
+CI build refreshes both binaries, `SHA256SUMS.txt`, and the hashes below only
+after Android, Windows, and CLI validation pass. Pull requests publish
+downloadable workflow artifacts without replacing these canonical root files.
+Published npm CLI versions pin an immutable installer commit and SHA-256, so an
+older CLI remains reproducible even after newer root builds are published.
 
 | Platform | Download | SHA-256 |
 |---|---|---|
