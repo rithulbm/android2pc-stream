@@ -30,6 +30,16 @@ enum class QualityProfile(
         VideoCodec.HEVC -> hevcBitrateTarget
         VideoCodec.AVC -> avcBitrateTarget
     }
+
+    fun minimumBitrate(codec: VideoCodec): Int = when (codec) {
+        VideoCodec.HEVC -> hevcBitrateMin
+        VideoCodec.AVC -> avcBitrateMin
+    }
+
+    fun maximumBitrate(codec: VideoCodec): Int = when (codec) {
+        VideoCodec.HEVC -> hevcBitrateMax
+        VideoCodec.AVC -> avcBitrateMax
+    }
 }
 
 data class ProfileCapability(
@@ -38,6 +48,8 @@ data class ProfileCapability(
     val available: Boolean,
     val unavailableReason: String?,
     val constrainedHighSpeed: Boolean = false,
+    val encoderName: String? = null,
+    val bitrate: Int? = null,
 )
 
 sealed interface QualitySelection {
@@ -124,4 +136,3 @@ object FpsRangeSelector {
         )
     }
 }
-
