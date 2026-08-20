@@ -35,6 +35,7 @@ constexpr UINT_PTR kCountdownTimer = 1;
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kActivateWindowMessage = WM_APP + 2;
 constexpr UINT kShowQrMessage = WM_APP + 3;
+constexpr UINT kReceiverStatusMessage = WM_APP + 4;
 constexpr UINT kTrayIconId = 1;
 constexpr int kControlNetwork = 101;
 constexpr int kControlLabel = 102;
@@ -166,7 +167,7 @@ private:
         while (running_.load()) {
             const HANDLE pipe = CreateNamedPipeW(
                 identity.name.c_str(),
-                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_ACCESS_INBOUND,
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 0,
@@ -174,17 +175,21 @@ private:
                 0,
                 &identity.attributes);
             if (pipe == INVALID_HANDLE_VALUE) {
-                running_.store(false);
-                return;
+                if (running_.load()) std::this_thread::sleep_for(std::chrono::milliseconds(75));
+                continue;
             }
             pipe_.store(pipe);
             const bool connected = ConnectNamedPipe(pipe, nullptr) != FALSE || GetLastError() == ERROR_PIPE_CONNECTED;
             if (connected && running_.load()) {
                 std::array<std::byte, 64> command{};
                 DWORD read = 0;
-                if (ReadFile(pipe, command.data(), static_cast<DWORD>(command.size()), &read, nullptr) != FALSE &&
-                    lcr::is_show_qr_command(std::span<const std::byte>(command.data(), read))) {
-                    PostMessageW(window_, message_, 0, 0);
+                if (ReadFile(pipe, command.data(), static_cast<DWORD>(command.size()), &read, nullptr) != FALSE) {
+                    const auto bytes = std::span<const std::byte>(command.data(), read);
+                    if (lcr::is_show_qr_command(bytes)) {
+                        PostMessageW(window_, message_, 0, 0);
+                    } else if (const auto status = lcr::parse_receiver_status_command(bytes)) {
+                        PostMessageW(window_, kReceiverStatusMessage, static_cast<WPARAM>(*status), 0);
+                    }
                 }
                 SecureZeroMemory(command.data(), command.size());
             }
@@ -254,14 +259,7 @@ std::string utf8(std::wstring_view input)
     if (required <= 0) return {};
     std::string output(static_cast<std::size_t>(required), '\0');
     const int written = WideCharToMultiByte(
-        CP_UTF8,
-        WC_ERR_INVALID_CHARS,
-        input.data(),
-        static_cast<int>(input.size()),
-        output.data(),
-        required,
-        nullptr,
-        nullptr);
+        CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), static_cast<int>(input.size()), output.data(), required, nullptr, nullptr);
     return written == required ? output : std::string{};
 }
 
@@ -297,9 +295,7 @@ std::optional<std::uint16_t> parse_u16(HWND control)
     if (narrow.empty()) return std::nullopt;
     unsigned int parsed = 0;
     const auto [end, error] = std::from_chars(narrow.data(), narrow.data() + narrow.size(), parsed);
-    if (error != std::errc{} || end != narrow.data() + narrow.size() || parsed > UINT16_MAX) {
-        return std::nullopt;
-    }
+    if (error != std::errc{} || end != narrow.data() + narrow.size() || parsed > UINT16_MAX) return std::nullopt;
     return static_cast<std::uint16_t>(parsed);
 }
 
@@ -308,52 +304,16 @@ HFONT make_font(int point_size, int weight, const wchar_t *face)
     HDC dc = GetDC(nullptr);
     const int dpi = dc != nullptr ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
     if (dc != nullptr) ReleaseDC(nullptr, dc);
-    return CreateFontW(
-        -MulDiv(point_size, dpi, 72),
-        0,
-        0,
-        0,
-        weight,
-        FALSE,
-        FALSE,
-        FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        face);
+    return CreateFontW(-MulDiv(point_size, dpi, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face);
 }
 
-HWND add_control(
-    HWND parent,
-    DWORD extended_style,
-    const wchar_t *class_name,
-    const wchar_t *text,
-    DWORD style,
-    int x,
-    int y,
-    int width,
-    int height,
-    int id,
-    HFONT font)
+HWND add_control(HWND parent, DWORD extended_style, const wchar_t *class_name, const wchar_t *text, DWORD style,
+                 int x, int y, int width, int height, int id, HFONT font)
 {
-    HWND control = CreateWindowExW(
-        extended_style,
-        class_name,
-        text,
-        WS_CHILD | WS_VISIBLE | style,
-        x,
-        y,
-        width,
-        height,
-        parent,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-        GetModuleHandleW(nullptr),
-        nullptr);
-    if (control != nullptr && font != nullptr) {
-        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    }
+    HWND control = CreateWindowExW(extended_style, class_name, text, WS_CHILD | WS_VISIBLE | style, x, y, width, height,
+                                   parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
+    if (control != nullptr && font != nullptr) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     return control;
 }
 
@@ -361,6 +321,27 @@ void set_status(HWND window, AppState &state, std::wstring message)
 {
     state.status = std::move(message);
     InvalidateRect(window, nullptr, FALSE);
+}
+
+std::wstring live_status_text(lcr::PairingReceiverState state)
+{
+    switch (state) {
+    case lcr::PairingReceiverState::stopped:
+        return L"Receiver stopped. Enable the Local Camera Receiver source in OBS.";
+    case lcr::PairingReceiverState::waiting_for_pairing:
+        return L"Receiver is waiting for a paired phone.";
+    case lcr::PairingReceiverState::listening:
+        return L"Receiver ready. Waiting for your phone to start streaming.";
+    case lcr::PairingReceiverState::authenticating:
+        return L"Phone found. Securing and authenticating the connection…";
+    case lcr::PairingReceiverState::streaming:
+        return L"Connected. Your phone is streaming to OBS.";
+    case lcr::PairingReceiverState::reconnecting:
+        return L"Connection interrupted. Waiting for the phone to reconnect…";
+    case lcr::PairingReceiverState::failed:
+        return L"Receiver failed. Check the OBS source and local-network settings.";
+    }
+    return L"Receiver status unavailable.";
 }
 
 void populate_networks(AppState &state)
@@ -381,7 +362,6 @@ SavedSettingsResult load_saved_settings(AppState &state)
     lcr::ConfigError error = lcr::ConfigError::none;
     auto config = lcr::load_config_dpapi(lcr::default_config_path(), lcr::now_epoch_seconds(), error);
     if (!config) return SavedSettingsResult::none;
-
     const std::wstring label = wide(config->label);
     const std::wstring port = std::to_wstring(config->port);
     const std::wstring latency = std::to_wstring(config->latency_ms);
@@ -401,7 +381,6 @@ std::optional<lcr::ReceiverConfig> load_or_create_config(HWND window, AppState &
         set_status(window, state, L"Connect this PC to a private Wi-Fi or Ethernet network first.");
         return std::nullopt;
     }
-
     const std::string label = utf8(window_text(state.label));
     const auto port = parse_u16(state.port);
     const auto latency = parse_u16(state.latency);
@@ -413,23 +392,15 @@ std::optional<lcr::ReceiverConfig> load_or_create_config(HWND window, AppState &
         set_status(window, state, L"Choose latency from 60 to 2000 milliseconds.");
         return std::nullopt;
     }
-
     const std::uint64_t now = lcr::now_epoch_seconds();
     const std::string &host = state.addresses[static_cast<std::size_t>(selected)].address;
     lcr::ConfigError load_error = lcr::ConfigError::none;
     auto config = lcr::load_config_dpapi(lcr::default_config_path(), now, load_error);
-    if (config && config->label == label && config->host == host &&
-        config->port == *port && config->latency_ms == *latency) {
+    if (config && config->label == label && config->host == host && config->port == *port && config->latency_ms == *latency) {
         return config;
     }
     if (config) config->clear_secret();
-
-    config = lcr::generate_config(
-        label,
-        host,
-        *port,
-        *latency,
-        now);
+    config = lcr::generate_config(label, host, *port, *latency, now);
     if (!config) {
         set_status(window, state, L"Check the receiver name and network settings, then try again.");
         return std::nullopt;
@@ -452,7 +423,6 @@ void create_pairing_qr(HWND window, AppState &state)
 {
     auto config = load_or_create_config(window, state);
     if (!config) return;
-
     state.clear_pairing_material();
     const std::uint64_t now = lcr::now_epoch_seconds();
     state.qr_expires = now + kQrLifetimeSeconds;
@@ -463,7 +433,6 @@ void create_pairing_qr(HWND window, AppState &state)
         set_status(window, state, L"Could not create the pairing QR. Check the settings and try again.");
         return;
     }
-
     try {
         state.qr = std::make_unique<qrcodegen::QrCode>(
             qrcodegen::QrCode::encodeText(state.pairing_payload.c_str(), qrcodegen::QrCode::Ecc::MEDIUM));
@@ -490,11 +459,7 @@ std::wstring clean_executable_value(std::wstring value)
     return value;
 }
 
-std::optional<std::wstring> read_registry_string(
-    HKEY root,
-    const wchar_t *subkey,
-    const wchar_t *name,
-    REGSAM view) noexcept
+std::optional<std::wstring> read_registry_string(HKEY root, const wchar_t *subkey, const wchar_t *name, REGSAM view) noexcept
 {
     HKEY key = nullptr;
     if (RegOpenKeyExW(root, subkey, 0, KEY_QUERY_VALUE | view, &key) != ERROR_SUCCESS) return std::nullopt;
@@ -506,8 +471,7 @@ std::optional<std::wstring> read_registry_string(
         return std::nullopt;
     }
     std::wstring value(bytes / sizeof(wchar_t), L'\0');
-    const LSTATUS loaded = RegQueryValueExW(
-        key, name, nullptr, &type, reinterpret_cast<BYTE *>(value.data()), &bytes);
+    const LSTATUS loaded = RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<BYTE *>(value.data()), &bytes);
     RegCloseKey(key);
     if (loaded != ERROR_SUCCESS) return std::nullopt;
     while (!value.empty() && value.back() == L'\0') value.pop_back();
@@ -541,15 +505,12 @@ void open_obs(HWND window)
     const auto candidates = obs_candidates();
     for (const auto &candidate : candidates) {
         if (!std::filesystem::is_regular_file(candidate)) continue;
-        const auto result = reinterpret_cast<std::intptr_t>(ShellExecuteW(
-            window, L"open", candidate.c_str(), nullptr, candidate.parent_path().c_str(), SW_SHOWNORMAL));
+        const auto result = reinterpret_cast<std::intptr_t>(
+            ShellExecuteW(window, L"open", candidate.c_str(), nullptr, candidate.parent_path().c_str(), SW_SHOWNORMAL));
         if (result > 32) return;
     }
-    MessageBoxW(
-        window,
-        L"Open OBS Studio, then add “Local Camera Receiver” from the Sources + menu.",
-        kWindowTitle,
-        MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(window, L"Open OBS Studio, then add “Local Camera Receiver” from the Sources + menu.",
+                kWindowTitle, MB_OK | MB_ICONINFORMATION);
 }
 
 void add_tray_icon(HWND window, AppState &state)
@@ -620,7 +581,6 @@ void paint_qr(HDC dc, const RECT &client, const AppState &state)
     SelectObject(dc, prior_brush);
     SelectObject(dc, prior_pen);
     DeleteObject(border);
-
     if (!state.qr) {
         SetTextColor(dc, RGB(31, 43, 51));
         const auto prior_font = SelectObject(dc, state.mono_font);
@@ -673,7 +633,6 @@ void paint_window(HWND window, const AppState &state)
     RECT status_dot{client.right - 58, 40, client.right - 46, 52};
     FillRect(dc, &status_dot, accent_brush);
     DeleteObject(accent_brush);
-
     HFONT prior = reinterpret_cast<HFONT>(SelectObject(dc, state.title_font));
     SetTextColor(dc, RGB(250, 251, 247));
     RECT title{32, 22, client.right - 84, 60};
@@ -681,13 +640,8 @@ void paint_window(HWND window, const AppState &state)
     SelectObject(dc, state.body_font);
     SetTextColor(dc, RGB(190, 201, 202));
     RECT intro{32, 62, client.right - 84, 92};
-    DrawTextW(
-        dc,
-        L"Encrypted phone camera input for OBS · local network only",
-        -1,
-        &intro,
-        DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-
+    DrawTextW(dc, L"Encrypted phone camera input for OBS · local network only", -1, &intro,
+              DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     HBRUSH card_brush = CreateSolidBrush(RGB(250, 248, 242));
     RECT settings_card{24, 126, client.right - 24, 282};
     FillRect(dc, &settings_card, card_brush);
@@ -698,20 +652,17 @@ void paint_window(HWND window, const AppState &state)
     LineTo(dc, client.right - 24, 282);
     SelectObject(dc, old_pen);
     DeleteObject(divider);
-
     SelectObject(dc, state.mono_font);
     SetTextColor(dc, RGB(31, 43, 51));
     RECT setup_label{36, 136, 280, 158};
     DrawTextW(dc, L"01  RECEIVER SETTINGS", -1, &setup_label, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     RECT pair_label{36, 292, 330, 314};
     DrawTextW(dc, L"02  PAIR THIS PHONE", -1, &pair_label, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-
     SelectObject(dc, state.small_font);
     SetTextColor(dc, RGB(67, 76, 78));
     RECT action_copy{382, 330, client.right - 36, 386};
     DrawTextW(dc, L"Settings are encrypted for this Windows account. Closing this window keeps the helper available in the tray.",
               -1, &action_copy, DT_LEFT | DT_WORDBREAK);
-
     paint_qr(dc, client, state);
     if (state.qr && state.qr_expires > 0) {
         const std::uint64_t now = lcr::now_epoch_seconds();
@@ -722,7 +673,6 @@ void paint_window(HWND window, const AppState &state)
         RECT timer{36, 634, 350, 660};
         DrawTextW(dc, countdown.c_str(), -1, &timer, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
-
     HBRUSH status_brush = CreateSolidBrush(RGB(228, 234, 226));
     RECT status_box{24, 668, client.right - 24, 718};
     FillRect(dc, &status_box, status_brush);
@@ -759,7 +709,6 @@ void draw_button(const DRAWITEMSTRUCT &item, const AppState &state)
     SelectObject(item.hDC, old_brush);
     SelectObject(item.hDC, old_pen);
     DeleteObject(pen);
-
     wchar_t text[96]{};
     GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
     SetBkMode(item.hDC, TRANSPARENT);
@@ -794,34 +743,27 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         state->mono_font = make_font(9, FW_SEMIBOLD, L"Consolas");
         state->background_brush = CreateSolidBrush(RGB(242, 239, 231));
         add_control(window, 0, WC_STATICW, L"Network", SS_LEFT, 36, 168, 106, 24, 0, state->small_font);
-        state->network = add_control(
-            window, WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP,
-            150, 164, 490, 240, kControlNetwork, state->body_font);
+        state->network = add_control(window, WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP,
+                                     150, 164, 490, 240, kControlNetwork, state->body_font);
         add_control(window, 0, WC_STATICW, L"Receiver name", SS_LEFT, 36, 210, 106, 24, 0, state->small_font);
-        state->label = add_control(
-            window, WS_EX_CLIENTEDGE, WC_EDITW, L"My PC", ES_AUTOHSCROLL | WS_TABSTOP,
-            150, 206, 260, 28, kControlLabel, state->body_font);
+        state->label = add_control(window, WS_EX_CLIENTEDGE, WC_EDITW, L"My PC", ES_AUTOHSCROLL | WS_TABSTOP,
+                                   150, 206, 260, 28, kControlLabel, state->body_font);
         SendMessageW(state->label, EM_SETLIMITTEXT, 48, 0);
         add_control(window, 0, WC_STATICW, L"Port", SS_LEFT, 428, 210, 42, 24, 0, state->small_font);
-        state->port = add_control(
-            window, WS_EX_CLIENTEDGE, WC_EDITW, L"9000", ES_NUMBER | ES_AUTOHSCROLL | ES_READONLY,
-            474, 206, 72, 28, kControlPort, state->body_font);
+        state->port = add_control(window, WS_EX_CLIENTEDGE, WC_EDITW, L"9000", ES_NUMBER | ES_AUTOHSCROLL | ES_READONLY,
+                                  474, 206, 72, 28, kControlPort, state->body_font);
         SendMessageW(state->port, EM_SETLIMITTEXT, 5, 0);
         add_control(window, 0, WC_STATICW, L"Latency", SS_LEFT, 36, 250, 106, 24, 0, state->small_font);
-        state->latency = add_control(
-            window, WS_EX_CLIENTEDGE, WC_EDITW, L"120", ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP,
-            150, 246, 80, 28, kControlLatency, state->body_font);
+        state->latency = add_control(window, WS_EX_CLIENTEDGE, WC_EDITW, L"120", ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP,
+                                     150, 246, 80, 28, kControlLatency, state->body_font);
         SendMessageW(state->latency, EM_SETLIMITTEXT, 4, 0);
         add_control(window, 0, WC_STATICW, L"milliseconds", SS_LEFT, 240, 250, 100, 24, 0, state->small_font);
-        add_control(
-            window, 0, WC_BUTTONW, L"Show pairing QR", BS_OWNERDRAW | WS_TABSTOP,
-            382, 402, 266, 44, kControlRotate, state->body_font);
-        add_control(
-            window, 0, WC_BUTTONW, L"Open OBS Studio", BS_OWNERDRAW | WS_TABSTOP,
-            382, 458, 266, 44, kControlOpenObs, state->body_font);
-        add_control(
-            window, 0, WC_BUTTONW, L"Finish && run in background", BS_OWNERDRAW | WS_TABSTOP,
-            382, 514, 266, 44, kControlFinish, state->body_font);
+        add_control(window, 0, WC_BUTTONW, L"Show pairing QR", BS_OWNERDRAW | WS_TABSTOP,
+                    382, 402, 266, 44, kControlRotate, state->body_font);
+        add_control(window, 0, WC_BUTTONW, L"Open OBS Studio", BS_OWNERDRAW | WS_TABSTOP,
+                    382, 458, 266, 44, kControlOpenObs, state->body_font);
+        add_control(window, 0, WC_BUTTONW, L"Finish && run in background", BS_OWNERDRAW | WS_TABSTOP,
+                    382, 514, 266, 44, kControlFinish, state->body_font);
         populate_networks(*state);
         if (state->addresses.empty()) {
             state->status = L"Connect this PC to a private Wi-Fi or Ethernet network first.";
@@ -843,14 +785,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     }
     case WM_COMMAND:
         if (state != nullptr && (HIWORD(wparam) == BN_CLICKED || HIWORD(wparam) == 0)) {
-            if (LOWORD(wparam) == kControlRotate) {
-                create_pairing_qr(window, *state);
-                return 0;
-            }
-            if (LOWORD(wparam) == kControlOpenObs) {
-                open_obs(window);
-                return 0;
-            }
+            if (LOWORD(wparam) == kControlRotate) { create_pairing_qr(window, *state); return 0; }
+            if (LOWORD(wparam) == kControlOpenObs) { open_obs(window); return 0; }
             if (LOWORD(wparam) == kControlFinish) {
                 auto config = load_or_create_config(window, *state);
                 if (!config) return 0;
@@ -860,19 +796,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 hide_to_tray(window, *state);
                 return 0;
             }
-            if (LOWORD(wparam) == kTrayOpen) {
-                show_main_window(window);
-                return 0;
-            }
-            if (LOWORD(wparam) == kTrayOpenObs) {
-                open_obs(window);
-                return 0;
-            }
-            if (LOWORD(wparam) == kTrayExit) {
-                state->allow_exit = true;
-                DestroyWindow(window);
-                return 0;
-            }
+            if (LOWORD(wparam) == kTrayOpen) { show_main_window(window); return 0; }
+            if (LOWORD(wparam) == kTrayOpenObs) { open_obs(window); return 0; }
+            if (LOWORD(wparam) == kTrayExit) { state->allow_exit = true; DestroyWindow(window); return 0; }
         }
         break;
     case WM_TIMER:
@@ -888,10 +814,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_DRAWITEM:
         if (state != nullptr && lparam != 0) {
             const auto *item = reinterpret_cast<const DRAWITEMSTRUCT *>(lparam);
-            if (item->CtlType == ODT_BUTTON) {
-                draw_button(*item, *state);
-                return TRUE;
-            }
+            if (item->CtlType == ODT_BUTTON) { draw_button(*item, *state); return TRUE; }
         }
         break;
     case WM_CTLCOLORSTATIC:
@@ -904,14 +827,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case kTrayCallbackMessage:
         if (state != nullptr) {
             const UINT event = LOWORD(lparam);
-            if (event == WM_LBUTTONUP || event == NIN_SELECT || event == NIN_KEYSELECT) {
-                show_main_window(window);
-                return 0;
-            }
-            if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
-                show_tray_menu(window);
-                return 0;
-            }
+            if (event == WM_LBUTTONUP || event == NIN_SELECT || event == NIN_KEYSELECT) { show_main_window(window); return 0; }
+            if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) { show_tray_menu(window); return 0; }
         }
         break;
     case kActivateWindowMessage:
@@ -923,28 +840,25 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             create_pairing_qr(window, *state);
         }
         return 0;
-    case WM_PAINT:
-        if (state != nullptr) {
-            paint_window(window, *state);
-            return 0;
+    case kReceiverStatusMessage:
+        if (state != nullptr && wparam <= static_cast<WPARAM>(lcr::PairingReceiverState::failed)) {
+            const auto receiver_state = static_cast<lcr::PairingReceiverState>(wparam);
+            if (receiver_state == lcr::PairingReceiverState::streaming) state->clear_pairing_material();
+            set_status(window, *state, live_status_text(receiver_state));
         }
+        return 0;
+    case WM_PAINT:
+        if (state != nullptr) { paint_window(window, *state); return 0; }
         break;
     case WM_ERASEBKGND:
         return 1;
     case WM_CLOSE:
-        if (state != nullptr && !state->allow_exit) {
-            hide_to_tray(window, *state);
-            return 0;
-        }
+        if (state != nullptr && !state->allow_exit) { hide_to_tray(window, *state); return 0; }
         break;
     case WM_QUERYENDSESSION:
         return TRUE;
     case WM_ENDSESSION:
-        if (wparam != FALSE && state != nullptr) {
-            state->allow_exit = true;
-            DestroyWindow(window);
-            return 0;
-        }
+        if (wparam != FALSE && state != nullptr) { state->allow_exit = true; DestroyWindow(window); return 0; }
         break;
     case WM_DESTROY:
         KillTimer(window, kCountdownTimer);
@@ -964,7 +878,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
-
     int argument_count = 0;
     LPWSTR *arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
     bool background_start = false;
@@ -972,27 +885,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     if (arguments != nullptr) {
         for (int index = 1; index < argument_count; ++index) {
             switch (lcr::pairing_launch_action(arguments[index])) {
-            case lcr::PairingLaunchAction::background:
-                background_start = true;
-                break;
-            case lcr::PairingLaunchAction::show_qr:
-                show_qr_start = true;
-                background_start = false;
-                break;
-            case lcr::PairingLaunchAction::none:
-                break;
+            case lcr::PairingLaunchAction::background: background_start = true; break;
+            case lcr::PairingLaunchAction::show_qr: show_qr_start = true; background_start = false; break;
+            case lcr::PairingLaunchAction::none: break;
             }
         }
         LocalFree(arguments);
     }
-
     HANDLE instance_mutex = CreateMutexW(nullptr, FALSE, L"Local\\LocalCameraReceiverPairing-18C4262B");
     if (instance_mutex == nullptr) return 1;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        if (show_qr_start && send_show_qr_control_command()) {
-            CloseHandle(instance_mutex);
-            return 0;
-        }
+        if (show_qr_start && send_show_qr_control_command()) { CloseHandle(instance_mutex); return 0; }
         if (show_qr_start || !background_start) {
             if (HWND existing = FindWindowW(kWindowClass, nullptr)) {
                 PostMessageW(existing, show_qr_start ? kShowQrMessage : kActivateWindowMessage, 0, 0);
@@ -1001,7 +904,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         CloseHandle(instance_mutex);
         return 0;
     }
-
     WNDCLASSEXW window_class{};
     window_class.cbSize = sizeof(window_class);
     window_class.style = CS_HREDRAW | CS_VREDRAW;
@@ -1013,31 +915,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     window_class.lpszClassName = kWindowClass;
     if (RegisterClassExW(&window_class) == 0) return 1;
-
     auto state = std::make_unique<AppState>();
-    HWND window = CreateWindowExW(
-        0,
-        kWindowClass,
-        kWindowTitle,
+    HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        700,
-        770,
-        nullptr,
-        nullptr,
-        instance,
-        state.get());
-    if (window == nullptr) {
-        CloseHandle(instance_mutex);
-        return 1;
-    }
+        CW_USEDEFAULT, CW_USEDEFAULT, 700, 770, nullptr, nullptr, instance, state.get());
+    if (window == nullptr) { CloseHandle(instance_mutex); return 1; }
     if (!background_start) {
         ShowWindow(window, show_command == SW_HIDE ? SW_SHOWNORMAL : show_command);
         UpdateWindow(window);
     }
     if (show_qr_start) PostMessageW(window, kShowQrMessage, 0, 0);
-
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
         if (!IsDialogMessageW(window, &message)) {
