@@ -1,6 +1,6 @@
 {
   "name": "local-camera-receiver",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Download and launch Local Camera Receiver for OBS Studio on Windows via npx or npm.",
   "bin": {
     "local-camera-receiver": "./bin/cli.js",
