@@ -51,9 +51,23 @@ jobs:
         working-directory: cli
         shell: pwsh
         run: |
-          $json = npm pack --json
+          $output = @(npm pack --json)
           if ($LASTEXITCODE -ne 0) { throw "npm pack failed with exit code $LASTEXITCODE" }
-          $package = $json | ConvertFrom-Json
+
+          $start = -1
+          $end = -1
+          for ($i = 0; $i -lt $output.Count; $i++) {
+            if ($output[$i].Trim() -eq '[') { $start = $i; break }
+          }
+          for ($i = $output.Count - 1; $i -ge 0; $i--) {
+            if ($output[$i].Trim() -eq ']') { $end = $i; break }
+          }
+          if ($start -lt 0 -or $end -lt $start) {
+            throw "npm pack did not emit a parseable JSON array."
+          }
+
+          $payload = ($output[$start..$end] -join "`n")
+          $package = $payload | ConvertFrom-Json
           if ($package.Count -ne 1) { throw "Expected exactly one npm package result." }
           $paths = @($package[0].files | ForEach-Object { $_.path })
           foreach ($required in @('LICENSE', 'README.md', 'bin/cli.js', 'lib/config.js', 'package.json')) {
