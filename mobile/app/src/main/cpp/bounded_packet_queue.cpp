@@ -45,10 +45,22 @@ bool BoundedPacketQueue::wait_pop(Packet& packet) {
     return true;
 }
 
+bool BoundedPacketQueue::wait_pop_for(Packet& packet, std::chrono::milliseconds timeout) {
+    std::unique_lock lock(mutex_);
+    if (!available_.wait_for(lock, timeout, [this] { return cancelled_ || !packets_.empty(); })) return false;
+    if (cancelled_) return false;
+    packet = std::move(packets_.front());
+    packets_.pop_front();
+    bytes_ -= packet.size();
+    return true;
+}
+
 void BoundedPacketQueue::clear() {
     std::lock_guard lock(mutex_);
+    for (auto& entry : packets_) std::fill(entry.begin(), entry.end(), std::uint8_t{0});
     packets_.clear();
     bytes_ = 0;
+    available_.notify_one();
 }
 
 void BoundedPacketQueue::cancel() {

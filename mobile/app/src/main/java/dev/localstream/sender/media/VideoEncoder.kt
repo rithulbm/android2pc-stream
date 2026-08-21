@@ -109,9 +109,9 @@ class VideoEncoder(
         }
     }
 
-    fun requestKeyFrame() {
+    fun requestKeyFrame(force: Boolean = false) {
         val now = System.nanoTime()
-        if (now - lastKeyFrameRequestNs < KEY_FRAME_REQUEST_INTERVAL_NS) return
+        if (!force && now - lastKeyFrameRequestNs < KEY_FRAME_REQUEST_INTERVAL_NS) return
         lastKeyFrameRequestNs = now
         try {
             codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
@@ -183,11 +183,13 @@ class VideoEncoder(
                     Log.i(TAG, "output format has no CSD; accepting in-band codec configuration")
                     return
                 }
-                replaceCodecConfigParts(parts)
-                if (normalizer.setCodecConfiguration(codecConfigParts.toList())) {
+                // Validate before committing to keep stale valid CSD on failure.
+                if (normalizer.setCodecConfiguration(parts)) {
+                    replaceCodecConfigParts(parts)
                     formatProvidedCodecConfig.set(true)
+                    accessUnitAssembler.clear()
                 } else {
-                    Log.w(TAG, "format CSD rejected; accepting in-band codec configuration")
+                    Log.w(TAG, "format CSD rejected; keeping previous CSD and accepting in-band configuration")
                 }
             }
         }
@@ -206,9 +208,20 @@ class VideoEncoder(
 
     private fun handleOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
         try {
-            if (info.size <= 0 || info.size > EncodedVideoNormalizer.MAX_ACCESS_UNIT_BYTES) return
-            val source = codec.getOutputBuffer(index) ?: return
-            if (info.offset < 0 || info.size < 0 || info.offset + info.size > source.capacity()) return
+            if (info.size <= 0 || info.size > EncodedVideoNormalizer.MAX_ACCESS_UNIT_BYTES) {
+                if (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) requestKeyFrame()
+                accessUnitAssembler.clear()
+                Log.w(TAG, "dropping invalid output size=${info.size} flags=${info.flags}")
+                return
+            }
+            val source = codec.getOutputBuffer(index) ?: run {
+                accessUnitAssembler.clear()
+                return
+            }
+            if (info.offset < 0 || info.size < 0 || info.offset + info.size > source.capacity()) {
+                accessUnitAssembler.clear()
+                return
+            }
             source.position(info.offset)
             source.limit(info.offset + info.size)
             val fragment = ByteArray(info.size)
@@ -240,7 +253,9 @@ class VideoEncoder(
     private fun processEncodedAccessUnit(unit: EncodedAccessUnit) {
         val isConfiguration = unit.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
         val isKeyFrame = unit.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-        if (isConfiguration) {
+        // If assembler OR-ed CONFIG|KEY_FRAME across PARTIAL fragments, this is a real IDR that was split.
+        // Do not drop it as pure config.
+        if (isConfiguration && !isKeyFrame) {
             if (!formatProvidedCodecConfig.get()) {
                 codecConfigParts += unit.bytes.copyOf()
                 if (!normalizer.setCodecConfiguration(codecConfigParts.toList())) {
@@ -249,13 +264,24 @@ class VideoEncoder(
             }
             return
         }
+        if (isConfiguration && isKeyFrame && !formatProvidedCodecConfig.get()) {
+            // Best-effort: try to learn CSD but do not drop the frame.
+            normalizer.setCodecConfiguration(listOf(unit.bytes))
+        }
+        if (isConfiguration && isKeyFrame) {
+            // Still forward as keyframe after best-effort CSD learn; fall through.
+        } else if (isConfiguration) {
+            return
+        }
 
         // Some Android encoders provide VPS/SPS/PPS only inside the first keyframe.
         // Do not abort merely because an out-of-band CSD callback has not arrived.
         val accessUnit = normalizer.normalizeFrame(unit.bytes, isKeyFrame)
         if (accessUnit == null) {
-            Log.w(TAG, "encoder produced an invalid access unit")
-            if (running.get()) onFailure(MediaFailure.VIDEO_ENCODER)
+            Log.w(TAG, "encoder produced an invalid access unit; requesting keyframe")
+            accessUnitAssembler.clear()
+            requestKeyFrame()
+            return
         } else {
             try {
                 if (!onAccessUnit(accessUnit, unit.presentationTimeUs, isKeyFrame)) {

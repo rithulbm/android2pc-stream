@@ -64,8 +64,8 @@ class MediaPipeline(
 
     fun queuePercent(): Int = transport?.queuePercent() ?: 0
 
-    fun requestKeyFrame() {
-        videoEncoder?.requestKeyFrame()
+    fun requestKeyFrame(force: Boolean = false) {
+        videoEncoder?.requestKeyFrame(force)
     }
 
     override fun close() {

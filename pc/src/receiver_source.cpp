@@ -180,7 +180,7 @@ public:
 
         listener_ = std::make_unique<SrtListener>(
             *sink_, publish_pairing_helper_status,
-            [this]() noexcept { return decoded_frame_ready(); });
+            [this]() noexcept { return decoded_ready_cache_.load(); });
         valid_.store(true);
         watcher_ = std::thread(&ReceiverSource::watch_config, this);
     }
@@ -203,6 +203,22 @@ public:
     void enum_child(obs_source_enum_proc_t callback, void *param) const noexcept
     {
         if (child_ != nullptr && callback != nullptr) callback(source_, child_, param);
+    }
+    void tick() noexcept
+    {
+        if (child_ == nullptr) {
+            decoded_ready_cache_.store(false);
+            return;
+        }
+        auto &api = obs_api();
+        obs_source_frame *frame = api.source_get_frame(child_);
+        if (frame == nullptr) {
+            decoded_ready_cache_.store(false);
+            return;
+        }
+        const bool ready = frame->width > 0U && frame->height > 0U;
+        api.source_release_frame(child_, frame);
+        decoded_ready_cache_.store(ready);
     }
 
     void update(obs_data_t *settings) noexcept
@@ -307,6 +323,7 @@ private:
     std::atomic<bool> hardware_decode_{false};
     std::atomic<bool> child_active_{false};
     std::atomic<bool> stopping_{false};
+    std::atomic<bool> decoded_ready_cache_{false};
     std::thread watcher_;
 };
 
@@ -320,6 +337,11 @@ void source_destroy(void *data) { delete static_cast<ReceiverSource *>(data); }
 void source_update(void *data, obs_data_t *settings) { static_cast<ReceiverSource *>(data)->update(settings); }
 void source_activate(void *data) { static_cast<ReceiverSource *>(data)->activate(); }
 void source_deactivate(void *data) { static_cast<ReceiverSource *>(data)->deactivate(); }
+void source_tick(void *data, float seconds)
+{
+    static_cast<ReceiverSource *>(data)->tick();
+    (void)seconds;
+}
 void source_enum_sources(void *data, obs_source_enum_proc_t callback, void *param)
 {
     if (data == nullptr) return;
@@ -392,6 +414,7 @@ bool register_receiver_source() noexcept
     info.deactivate = source_deactivate;
     info.enum_active_sources = source_enum_sources;
     info.enum_all_sources = source_enum_sources;
+    info.video_tick = source_tick;
     info.video_render = source_render;
     info.audio_render = source_audio_render;
     obs_api().register_source_s(&info, sizeof(info));

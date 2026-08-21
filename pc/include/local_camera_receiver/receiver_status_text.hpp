@@ -14,8 +14,9 @@ inline std::string receiver_status_text(const ReceiverStatus &status)
         return message;
     }
     if (status.state == ReceiverState::authenticating) {
-        if (!status.connected_device.empty() && status.accepted_packets > 0) {
-            return "Phone connected securely. Media is arriving; waiting for OBS to decode the first video frame...";
+        if (!status.connected_device.empty() && status.accepted_packets_this_peer > 0) {
+            if (!status.pipe_connected) return "Phone connected securely. Valid TS arriving; waiting for decoder pipe...";
+            if (!status.decoder_ready) return "Phone connected securely. Media is arriving; waiting for OBS to decode the first video frame...";
         }
         return "Phone found. Checking the secure pairing...";
     }

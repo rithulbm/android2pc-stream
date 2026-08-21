@@ -23,6 +23,9 @@
 # Agent handoff prompts (local only, never committed)
 prompts/
 
+# Upstream open-source clones for local analysis (never committed)
+analysis/
+
 # Secrets, credentials, and machine-local identity
 *.keystore
 *.jks

@@ -61,9 +61,10 @@ class EncodedVideoNormalizer(private val maximumAccessUnitBytes: Int = MAX_ACCES
         // validate a complete 4-byte length-prefixed stream before accepting AVCC;
         // this prevents 256-511 byte NAL lengths from being mistaken for start codes.
         val detected = when {
-            startsWithFourByteStartCode(bytes) -> AccessUnitFormat.ANNEX_B
+            startsWithFourByteStartCode(bytes) && !isValidAvcc(bytes) -> AccessUnitFormat.ANNEX_B
             isValidAvcc(bytes) -> AccessUnitFormat.AVCC
             isGenuineAnnexB(bytes) -> AccessUnitFormat.ANNEX_B
+            startsWithFourByteStartCode(bytes) -> AccessUnitFormat.ANNEX_B
             else -> return null
         }
         accessUnitFormat = detected

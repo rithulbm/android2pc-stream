@@ -19,8 +19,10 @@ constexpr int kInvalidSocket = -1;
 constexpr int kAesGcmMode = 2;
 constexpr int kPayloadBytes = 1316;
 constexpr int kConnectTimeoutMilliseconds = 3'000;
-constexpr int kSendTimeoutMilliseconds = 500;
+constexpr int kSendTimeoutMilliseconds = 1'500;
 constexpr int kPeerIdleTimeoutMilliseconds = 5'000;
+constexpr int kVerifyTimeoutMilliseconds = 4'000;
+constexpr int kWorkerPollMilliseconds = 100;
 constexpr std::array<int, 10> kReconnectDelaySeconds{1, 2, 4, 8, 16, 30, 30, 30, 30, 30};
 
 template <typename T>
@@ -256,6 +258,7 @@ void NativeSender::worker_main() {
 
         socket_.store(connected_socket);
         error_.store(SenderError::kNone);
+        has_streamed = true;
         // First make the queue/mux epoch clean while producers still see Connecting or
         // Reconnecting and therefore drop frames. Only then expose the keyframe demand.
         reset_mux_after_disconnect();
@@ -264,7 +267,19 @@ void NativeSender::worker_main() {
         Packet packet;
         bool send_failed = false;
         bool sent_media = false;
-        while (!stopping_.load() && queue_.wait_pop(packet)) {
+        while (!stopping_.load()) {
+            if (!queue_.wait_pop_for(packet, std::chrono::milliseconds(kWorkerPollMilliseconds))) {
+                if (stopping_.load()) break;
+                int state = SRTS_INIT;
+                int state_size = static_cast<int>(sizeof(state));
+                if (srt_getsockopt(connected_socket, 0, SRTO_STATE, &state, &state_size) != SRT_ERROR &&
+                    (state == SRTS_BROKEN || state == SRTS_CLOSING || state == SRTS_CLOSED)) {
+                    send_failed = true;
+                    error_.store(SenderError::kSend);
+                    break;
+                }
+                continue;
+            }
             if (packet.empty() || packet.size() > static_cast<std::size_t>(kPayloadBytes)) {
                 continue;
             }
@@ -291,10 +306,11 @@ void NativeSender::worker_main() {
         }
         reset_mux_after_disconnect();
         if (sent_media) {
-            has_streamed = true;
             consecutive_failures = 0;
         }
         if (!send_failed) {
+            if (!wait_for_reconnect(consecutive_failures)) break;
+            ++consecutive_failures;
             continue;
         }
         if (consecutive_failures >= kReconnectDelaySeconds.size()) {
@@ -323,6 +339,7 @@ int NativeSender::connect_socket() {
     const int minimum_version = SRT_MAKE_VERSION(1, 5, 6);
     const std::string stream_id = "lcr/1/" + config_.device_name;
     std::string passphrase = encode_base64_url(config_.secret);
+    int adaptive_send_timeout = std::max(kSendTimeoutMilliseconds, config_.latency_milliseconds * 3 / 2);
     const bool base_configured =
         set_option(socket, SRTO_TRANSTYPE, live) && set_option(socket, SRTO_SENDER, enabled) &&
         set_option(socket, SRTO_TSBPDMODE, enabled) && set_option(socket, SRTO_MESSAGEAPI, enabled) &&
@@ -330,7 +347,7 @@ int NativeSender::connect_socket() {
         set_option(socket, SRTO_LATENCY, config_.latency_milliseconds) &&
         set_option(socket, SRTO_PEERLATENCY, config_.latency_milliseconds) &&
         set_option(socket, SRTO_CONNTIMEO, kConnectTimeoutMilliseconds) &&
-        set_option(socket, SRTO_SNDTIMEO, kSendTimeoutMilliseconds) &&
+        set_option(socket, SRTO_SNDTIMEO, adaptive_send_timeout) &&
         set_option(socket, SRTO_PEERIDLETIMEO, kPeerIdleTimeoutMilliseconds) &&
         set_option(socket, SRTO_MINVERSION, minimum_version) && set_option(socket, SRTO_PBKEYLEN, key_length) &&
         set_option(socket, SRTO_ENFORCEDENCRYPTION, enabled) && set_option(socket, SRTO_CRYPTOMODE, crypto_mode);
@@ -380,7 +397,7 @@ bool NativeSender::verify_encryption(int socket) const {
         crypto_mode != kAesGcmMode) {
         return false;
     }
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kVerifyTimeoutMilliseconds);
     while (!stopping_.load() && std::chrono::steady_clock::now() < deadline) {
         int sender_key_state = SRT_KM_S_UNSECURED;
         int receiver_key_state = SRT_KM_S_UNSECURED;

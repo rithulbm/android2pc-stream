@@ -111,7 +111,7 @@ std::optional<std::string> authenticated_device_label(const SRTSOCKET socket) no
 
 bool valid_ts_group(const std::span<const std::uint8_t> bytes) noexcept
 {
-    if (bytes.empty() || bytes.size() > kPayloadBytes || bytes.size() % 188U != 0) {
+    if (bytes.empty() || bytes.size() > static_cast<std::size_t>(kPayloadBytes) || bytes.size() % 188U != 0) {
         return false;
     }
     for (std::size_t offset = 0; offset < bytes.size(); offset += 188U) {
@@ -184,6 +184,11 @@ void SrtListener::publish(const ReceiverState state, const ReceiverError error) 
         if (state == ReceiverState::stopped || state == ReceiverState::listening || state == ReceiverState::failed) {
             status_.connected_device.clear();
             status_.peer_address.clear();
+        }
+        if (state == ReceiverState::listening) {
+            status_.accepted_packets_this_peer = 0;
+            status_.pipe_connected = false;
+            status_.decoder_ready = false;
         }
         snapshot = status_;
     }
@@ -271,7 +276,8 @@ void SrtListener::run(ReceiverConfig config) noexcept
         peer_socket_.store(peer);
         // These are post-connect options. Set them explicitly on the accepted socket so
         // receive blocking behavior never depends on listener-option inheritance rules.
-        if (!set_option(peer, SRTO_RCVSYN, synchronous) || !set_option(peer, SRTO_RCVTIMEO, kReceiveTimeoutMs)) {
+        if (!set_option(peer, SRTO_RCVSYN, synchronous) || !set_option(peer, SRTO_RCVTIMEO, kReceiveTimeoutMs) ||
+            !set_option(peer, SRTO_PAYLOADSIZE, kPayloadBytes)) {
             close_socket(peer_socket_);
             publish(previously_streamed ? ReceiverState::reconnecting : ReceiverState::listening,
                     ReceiverError::transport);
@@ -286,24 +292,28 @@ void SrtListener::run(ReceiverConfig config) noexcept
             publish(ReceiverState::listening, ReceiverError::authentication);
             continue;
         }
-        publish(ReceiverState::authenticating);
-        if (!verify_encryption(peer, running_)) {
-            close_socket(peer_socket_);
-            publish(ReceiverState::listening, ReceiverError::encryption_downgrade);
-            continue;
-        }
+        // Atomically publish authenticating with device label to avoid stale accepted_packets window.
         const auto device_label = authenticated_device_label(peer);
         if (!device_label) {
             close_socket(peer_socket_);
             publish(ReceiverState::listening, ReceiverError::authentication);
             continue;
         }
+        if (!verify_encryption(peer, running_)) {
+            close_socket(peer_socket_);
+            publish(ReceiverState::listening, ReceiverError::encryption_downgrade);
+            continue;
+        }
         {
             std::scoped_lock lock(status_mutex_);
             status_.connected_device = *device_label;
             status_.peer_address = peer_host.data();
+            status_.accepted_packets_this_peer = 0;
+            status_.pipe_connected = false;
+            status_.decoder_ready = false;
         }
-        std::array<std::uint8_t, kPayloadBytes> packet{};
+        publish(ReceiverState::authenticating);
+        std::array<std::uint8_t, kPayloadBytes + 64> packet{};
         bool media_started = false;
         while (running_.load()) {
             if (now_epoch_seconds() >= config.credential_expires_epoch_seconds) {
@@ -318,9 +328,14 @@ void SrtListener::run(ReceiverConfig config) noexcept
                 static_cast<int>(packet.size()),
                 &control);
             if (received == SRT_ERROR) {
-                if (srt_getsockstate(peer) == SRTS_CONNECTED) {
+                const int last_error = srt_getlasterror(nullptr);
+                if (srt_getsockstate(peer) == SRTS_CONNECTED && last_error == SRT_EASYNCRCV) {
                     continue;
                 }
+                break;
+            }
+            if (received > kPayloadBytes) {
+                publish(ReceiverState::reconnecting, ReceiverError::transport);
                 break;
             }
             const auto bytes = std::span<const std::uint8_t>(packet.data(), static_cast<std::size_t>(received));
@@ -339,8 +354,15 @@ void SrtListener::run(ReceiverConfig config) noexcept
             {
                 std::scoped_lock lock(status_mutex_);
                 ++status_.accepted_packets;
+                ++status_.accepted_packets_this_peer;
+                status_.pipe_connected = sink_.client_connected();
             }
             const bool decoder_ready = !media_ready_ || media_ready_();
+            {
+                std::scoped_lock lock(status_mutex_);
+                status_.decoder_ready = decoder_ready;
+                status_.pipe_connected = sink_.client_connected();
+            }
             if (!media_started && sink_.client_connected() && decoder_ready) {
                 // Streaming means the authenticated sender is producing valid TS,
                 // OBS's private FFmpeg child is attached, and OBS has produced a
@@ -348,6 +370,11 @@ void SrtListener::run(ReceiverConfig config) noexcept
                 media_started = true;
                 previously_streamed = true;
                 publish(ReceiverState::streaming);
+            } else if (media_started) {
+                if (!sink_.client_connected() || !decoder_ready) {
+                    publish(ReceiverState::authenticating);
+                    media_started = false;
+                }
             }
         }
         SecureZeroMemory(packet.data(), packet.size());

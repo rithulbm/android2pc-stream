@@ -37,9 +37,12 @@ struct ReceiverStatus final {
     ReceiverState state = ReceiverState::stopped;
     ReceiverError error = ReceiverError::none;
     std::uint64_t accepted_packets = 0;
+    std::uint64_t accepted_packets_this_peer = 0;
     std::uint64_t dropped_packets = 0;
     std::string connected_device;
     std::string peer_address;
+    bool pipe_connected = false;
+    bool decoder_ready = false;
 };
 
 class SrtListener final {

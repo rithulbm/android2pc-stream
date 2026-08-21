@@ -1,6 +1,7 @@
 #ifndef LOCAL_CAMERA_SENDER_BOUNDED_PACKET_QUEUE_H
 #define LOCAL_CAMERA_SENDER_BOUNDED_PACKET_QUEUE_H
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,7 @@ class BoundedPacketQueue final {
 
     [[nodiscard]] bool push_batch(PacketBatch&& batch);
     [[nodiscard]] bool wait_pop(Packet& packet);
+    [[nodiscard]] bool wait_pop_for(Packet& packet, std::chrono::milliseconds timeout);
     void clear();
     void cancel();
     void reset();

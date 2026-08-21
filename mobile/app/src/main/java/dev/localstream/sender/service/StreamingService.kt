@@ -274,7 +274,7 @@ class StreamingService : Service() {
             TransportStatus.NEEDS_KEY_FRAME -> {
                 // Native transport has completed SRT setup and intentionally discarded
                 // all pre-connect media. Ask the encoder for a fresh IDR until one arrives.
-                activePipeline.requestKeyFrame()
+                activePipeline.requestKeyFrame(force = true)
                 stateMachine.handle(StreamEvent.RetryConnecting(stateMachine.snapshot().generation))
                 StreamingSessionRegistry.publish(
                     PublicStreamSnapshot(PublicStreamState.CONNECTING, "Starting video…", profile),
