@@ -274,10 +274,11 @@ void SrtListener::run(ReceiverConfig config) noexcept
             continue;
         }
         peer_socket_.store(peer);
-        // These are post-connect options. Set them explicitly on the accepted socket so
-        // receive blocking behavior never depends on listener-option inheritance rules.
-        if (!set_option(peer, SRTO_RCVSYN, synchronous) || !set_option(peer, SRTO_RCVTIMEO, kReceiveTimeoutMs) ||
-            !set_option(peer, SRTO_PAYLOADSIZE, kPayloadBytes)) {
+        // Post-connect receive behavior. SRTO_PAYLOADSIZE is deliberately absent here:
+        // it is a pre-connect-only option (SRTO_R_PRE) and the accepted socket already
+        // inherited 1316 from the listener, which set it before bind(). Attempting to
+        // set it on a connected socket always fails and would tear down every peer.
+        if (!set_option(peer, SRTO_RCVSYN, synchronous) || !set_option(peer, SRTO_RCVTIMEO, kReceiveTimeoutMs)) {
             close_socket(peer_socket_);
             publish(previously_streamed ? ReceiverState::reconnecting : ReceiverState::listening,
                     ReceiverError::transport);
@@ -328,8 +329,12 @@ void SrtListener::run(ReceiverConfig config) noexcept
                 static_cast<int>(packet.size()),
                 &control);
             if (received == SRT_ERROR) {
+                // Synchronous receive with RCVTIMEO reports idle windows as
+                // SRT_ETIMEOUT; SRT_EASYNCRCV only occurs in non-blocking mode but is
+                // kept for symmetry. Both mean "no data yet", never a broken peer.
                 const int last_error = srt_getlasterror(nullptr);
-                if (srt_getsockstate(peer) == SRTS_CONNECTED && last_error == SRT_EASYNCRCV) {
+                if (srt_getsockstate(peer) == SRTS_CONNECTED &&
+                    (last_error == SRT_ETIMEOUT || last_error == SRT_EASYNCRCV)) {
                     continue;
                 }
                 break;

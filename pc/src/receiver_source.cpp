@@ -210,14 +210,15 @@ public:
             decoded_ready_cache_.store(false);
             return;
         }
+        // Non-destructive readiness probe. obs_source_get_frame() REMOVES
+        // cur_async_frame from the source (obs-source.c:4208-4209); probing with it
+        // steals frames from obs_source_update_async_video() on the render path,
+        // which starves texture upload and yields a black preview even while the
+        // FFmpeg child decodes perfectly. ffmpeg_source implements no get_width,
+        // so obs_source_get_width/height report the async frame dimensions
+        // (obs-source.c:2706) without touching the frame slot.
         auto &api = obs_api();
-        obs_source_frame *frame = api.source_get_frame(child_);
-        if (frame == nullptr) {
-            decoded_ready_cache_.store(false);
-            return;
-        }
-        const bool ready = frame->width > 0U && frame->height > 0U;
-        api.source_release_frame(child_, frame);
+        const bool ready = api.source_get_width(child_) > 0U && api.source_get_height(child_) > 0U;
         decoded_ready_cache_.store(ready);
     }
 
@@ -262,17 +263,6 @@ public:
     }
 
 private:
-    [[nodiscard]] bool decoded_frame_ready() const noexcept
-    {
-        if (child_ == nullptr) return false;
-        auto &api = obs_api();
-        obs_source_frame *frame = api.source_get_frame(child_);
-        if (frame == nullptr) return false;
-        const bool ready = frame->width > 0U && frame->height > 0U;
-        api.source_release_frame(child_, frame);
-        return ready;
-    }
-
     void watch_config() noexcept
     {
         std::filesystem::file_time_type last_write{};
