@@ -5,7 +5,6 @@ import java.io.ByteArrayOutputStream
 /** Converts bounded MediaCodec Annex-B or 4-byte length-prefixed access units to Annex-B. */
 class EncodedVideoNormalizer(private val maximumAccessUnitBytes: Int = MAX_ACCESS_UNIT_BYTES) {
     private var codecConfiguration = ByteArray(0)
-    private var accessUnitFormat = AccessUnitFormat.UNKNOWN
 
     fun hasCodecConfiguration(): Boolean = codecConfiguration.isNotEmpty()
 
@@ -25,10 +24,57 @@ class EncodedVideoNormalizer(private val maximumAccessUnitBytes: Int = MAX_ACCES
         return codecConfiguration + frame
     }
 
+    /**
+     * True when the buffer's first video slice NAL is an H.264 IDR slice or an HEVC
+     * IRAP (BLA/IDR/CRA) NAL. Recovery path for vendor encoders that emit IDRs
+     * without BUFFER_FLAG_KEY_FRAME; scans only leading NAL headers up to the first
+     * slice, so cost is bounded regardless of access-unit size.
+     */
+    fun containsRandomAccessNal(bytes: ByteArray, hevc: Boolean): Boolean {
+        var offset = 0
+        while (offset + START_CODE.size <= bytes.size || offset + 3 <= bytes.size) {
+            val startCodeLength = when {
+                offset + 4 <= bytes.size &&
+                    bytes[offset] == 0.toByte() && bytes[offset + 1] == 0.toByte() &&
+                    bytes[offset + 2] == 0.toByte() && bytes[offset + 3] == 1.toByte() -> 4
+                offset + 3 <= bytes.size &&
+                    bytes[offset] == 0.toByte() && bytes[offset + 1] == 0.toByte() &&
+                    bytes[offset + 2] == 1.toByte() -> 3
+                else -> return false
+            }
+            val headerOffset = offset + startCodeLength
+            if (headerOffset >= bytes.size) return false
+            val header = bytes[headerOffset].toInt() and 0xFF
+            if (header and 0x80 != 0) return false // forbidden_zero_bit must be 0
+            if (hevc) {
+                val nalType = (header shr 1) and 0x3F
+                if (nalType < 32) return nalType in IRAP_NAL_TYPE_MIN..IRAP_NAL_TYPE_MAX
+            } else {
+                val nalType = header and 0x1F
+                if (nalType in 1..5) return nalType == H264_IDR_SLICE_TYPE
+            }
+            offset = nextStartCode(bytes, headerOffset + 2) ?: return false
+        }
+        return false
+    }
+
     fun clear() {
         codecConfiguration.fill(0)
         codecConfiguration = ByteArray(0)
-        accessUnitFormat = AccessUnitFormat.UNKNOWN
+    }
+
+    private fun nextStartCode(bytes: ByteArray, from: Int): Int? {
+        var index = from
+        var zeros = 0
+        while (index < bytes.size) {
+            when (bytes[index].toInt()) {
+                0 -> zeros++
+                1 -> if (zeros >= 2) return index - 2 else zeros = 0
+                else -> zeros = 0
+            }
+            index++
+        }
+        return null
     }
 
     private fun normalizeConfigurationPart(bytes: ByteArray): ByteArray? {
@@ -42,33 +88,19 @@ class EncodedVideoNormalizer(private val maximumAccessUnitBytes: Int = MAX_ACCES
 
     private fun normalize(bytes: ByteArray): ByteArray? {
         if (bytes.isEmpty() || bytes.size > maximumAccessUnitBytes) return null
-        return when (lockedFormat(bytes) ?: return null) {
-            AccessUnitFormat.ANNEX_B -> if (isGenuineAnnexB(bytes)) bytes.copyOf() else null
-            AccessUnitFormat.AVCC -> convertAvcc(bytes)
-            AccessUnitFormat.UNKNOWN -> null
+        // Per-buffer strict detection with no cross-frame lock (one mismatched
+        // CSD/frame pairing used to reject every later access unit). Order matters:
+        // a genuine 4-byte start code is always Annex-B because a real AVCC stream
+        // cannot begin with a 1-byte first NAL; otherwise the complete AVCC length
+        // walk decides before a mere 3-byte start-code prefix is trusted, so AVCC
+        // lengths of 256-511 bytes (prefix 00 00 01 XX) are never mistaken for
+        // start codes.
+        return when {
+            startsWithFourByteStartCode(bytes) -> bytes.copyOf()
+            isValidAvcc(bytes) -> convertAvcc(bytes)
+            isGenuineAnnexB(bytes) -> bytes.copyOf()
+            else -> null
         }
-    }
-
-    private fun lockedFormat(bytes: ByteArray): AccessUnitFormat? {
-        if (accessUnitFormat != AccessUnitFormat.UNKNOWN) {
-            return when (accessUnitFormat) {
-                AccessUnitFormat.ANNEX_B -> accessUnitFormat.takeIf { isGenuineAnnexB(bytes) }
-                AccessUnitFormat.AVCC -> accessUnitFormat.takeIf { isValidAvcc(bytes) }
-                AccessUnitFormat.UNKNOWN -> null
-            }
-        }
-        // A 4-byte start code is unambiguous Annex-B. For a leading 00 00 01,
-        // validate a complete 4-byte length-prefixed stream before accepting AVCC;
-        // this prevents 256-511 byte NAL lengths from being mistaken for start codes.
-        val detected = when {
-            startsWithFourByteStartCode(bytes) && !isValidAvcc(bytes) -> AccessUnitFormat.ANNEX_B
-            isValidAvcc(bytes) -> AccessUnitFormat.AVCC
-            isGenuineAnnexB(bytes) -> AccessUnitFormat.ANNEX_B
-            startsWithFourByteStartCode(bytes) -> AccessUnitFormat.ANNEX_B
-            else -> return null
-        }
-        accessUnitFormat = detected
-        return detected
     }
 
     private fun convertAvcc(bytes: ByteArray): ByteArray? {
@@ -145,16 +177,13 @@ class EncodedVideoNormalizer(private val maximumAccessUnitBytes: Int = MAX_ACCES
             ((bytes[offset + 2].toInt() and 0xFF) shl 8) or
             (bytes[offset + 3].toInt() and 0xFF)
 
-    private enum class AccessUnitFormat {
-        UNKNOWN,
-        ANNEX_B,
-        AVCC,
-    }
-
     companion object {
         const val MAX_ACCESS_UNIT_BYTES: Int = 8 * 1024 * 1024
         private const val MAX_CONFIGURATION_BYTES = 64 * 1024
         private const val LENGTH_PREFIX_BYTES = 4
+        private const val H264_IDR_SLICE_TYPE = 5
+        private const val IRAP_NAL_TYPE_MIN = 16
+        private const val IRAP_NAL_TYPE_MAX = 23
         private val START_CODE = byteArrayOf(0, 0, 0, 1)
     }
 }

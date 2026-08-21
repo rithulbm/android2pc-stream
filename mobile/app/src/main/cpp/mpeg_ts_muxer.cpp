@@ -13,7 +13,10 @@ constexpr std::uint16_t kPmtPid = 0x1000;
 constexpr std::uint16_t kVideoPid = 0x0100;
 constexpr std::uint16_t kAudioPid = 0x0101;
 constexpr std::uint16_t kProgramNumber = 1;
-constexpr std::int64_t kTableIntervalMicroseconds = 500'000;
+// Tables repeat at ~100 ms (matching FFmpeg mpegtsenc defaults) plus on every
+// keyframe, so a joining demuxer acquires PAT/PMT without waiting out a long
+// interval on a live, non-seekable pipe.
+constexpr std::int64_t kTableIntervalMicroseconds = 100'000;
 constexpr std::uint64_t kPtsMask = (1ULL << 33U) - 1ULL;
 
 std::uint32_t crc32_mpeg(const std::span<const std::uint8_t> bytes) {
@@ -110,6 +113,7 @@ void MpegTsMuxer::reset(const std::int64_t origin_microseconds) {
     origin_microseconds_ = origin_microseconds;
     last_tables_microseconds_ = -1;
     continuity_.fill(0);
+    discontinuity_pending_.fill(true);
 }
 
 bool MpegTsMuxer::write_video(
@@ -248,6 +252,7 @@ bool MpegTsMuxer::emit_pes(
 
     std::size_t offset = 0;
     bool first = true;
+    const bool discont = pid < discontinuity_pending_.size() && discontinuity_pending_[pid];
     while (offset < pes.size()) {
         TsPacket packet{};
         packet.fill(0xFFU);
@@ -257,7 +262,10 @@ bool MpegTsMuxer::emit_pes(
 
         const std::size_t remaining = pes.size() - offset;
         const bool pcr_here = first && include_pcr;
-        const std::size_t minimum_adaptation_total = pcr_here ? 8U : 0U;
+        // A discontinuity_indicator needs a flags byte, so the adaptation field
+        // must be at least two bytes (length + flags).
+        const std::size_t minimum_adaptation_total =
+            pcr_here ? 8U : (discont && first ? 2U : 0U);
         std::size_t adaptation_total = minimum_adaptation_total;
         const std::size_t capacity_with_minimum = 184U - minimum_adaptation_total;
         if (remaining < capacity_with_minimum) {
@@ -273,7 +281,8 @@ bool MpegTsMuxer::emit_pes(
             payload_offset += adaptation_total;
             if (adaptation_total > 1U) {
                 packet[5] = static_cast<std::uint8_t>(
-                    (key_frame && first ? 0x40U : 0x00U) | (pcr_here ? 0x10U : 0x00U));
+                    (key_frame && first ? 0x40U : 0x00U) | (pcr_here ? 0x10U : 0x00U) |
+                    (discont && first ? 0x80U : 0x00U));
                 if (pcr_here) {
                     const std::uint64_t pcr = pcr27(presentation_time_microseconds);
                     const std::uint64_t base = (pcr / 300U) & kPtsMask;
@@ -295,6 +304,9 @@ bool MpegTsMuxer::emit_pes(
         offset += copied;
         packets.push_back(packet);
         first = false;
+    }
+    if (discont && pid < discontinuity_pending_.size()) {
+        discontinuity_pending_[pid] = false;
     }
     return true;
 }

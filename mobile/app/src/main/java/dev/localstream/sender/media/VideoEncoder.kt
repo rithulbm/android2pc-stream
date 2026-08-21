@@ -252,7 +252,12 @@ class VideoEncoder(
 
     private fun processEncodedAccessUnit(unit: EncodedAccessUnit) {
         val isConfiguration = unit.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-        val isKeyFrame = unit.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+        val flagKeyFrame = unit.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+        // Some vendor encoders emit IDRs without BUFFER_FLAG_KEY_FRAME. Detect the
+        // random-access NAL directly so the transport's keyframe gate (video_started_)
+        // can never stall waiting for a flag that never arrives.
+        val isKeyFrame = flagKeyFrame || (!flagKeyFrame && !isConfiguration &&
+            normalizer.containsRandomAccessNal(unit.bytes, config.codec == VideoCodec.HEVC))
         // If assembler OR-ed CONFIG|KEY_FRAME across PARTIAL fragments, this is a real IDR that was split.
         // Do not drop it as pure config.
         if (isConfiguration && !isKeyFrame) {

@@ -58,6 +58,11 @@ class MpegTsMuxer final {
     std::int64_t origin_microseconds_ = -1;
     std::int64_t last_tables_microseconds_ = -1;
     std::array<std::uint8_t, 8192> continuity_{};
+    // Set by reset() and consumed on the first PES packet of each PID: marks the
+    // adaptation field discontinuity_indicator so downstream demuxers resync
+    // continuity counters and timestamps after a sender reconnect instead of
+    // flagging the stream corrupt.
+    std::array<bool, 8192> discontinuity_pending_{};
 };
 
 }  // namespace local_sender
