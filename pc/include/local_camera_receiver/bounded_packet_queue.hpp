@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,7 @@ public:
 
     [[nodiscard]] bool push(std::span<const std::uint8_t> packet);
     [[nodiscard]] std::optional<std::vector<std::uint8_t>> wait_pop();
+    [[nodiscard]] std::optional<std::vector<std::uint8_t>> wait_pop_for(std::chrono::milliseconds timeout);
     void clear() noexcept;
     void cancel() noexcept;
     void reset() noexcept;

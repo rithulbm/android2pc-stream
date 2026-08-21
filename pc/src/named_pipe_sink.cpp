@@ -104,6 +104,17 @@ void NamedPipeSink::stop() noexcept
     if (worker_.joinable()) {
         worker_.join();
     }
+    // The worker stores the handle after CreateNamedPipeW and before
+    // ConnectNamedPipe; a stop() racing that window exchanges nothing above. The
+    // worker re-checks running_ after storing, but sweep once more post-join so no
+    // handle or listening instance can outlive this object under any interleaving.
+    const auto leftover = pipe_.exchange(nullptr);
+    if (leftover != nullptr && leftover != INVALID_HANDLE_VALUE) {
+        const auto handle = static_cast<HANDLE>(leftover);
+        CancelIoEx(handle, nullptr);
+        DisconnectNamedPipe(handle);
+        CloseHandle(handle);
+    }
     queue_.clear();
 }
 
@@ -127,15 +138,19 @@ const std::wstring &NamedPipeSink::pipe_name() const noexcept
 
 void NamedPipeSink::run() noexcept
 {
+    std::chrono::milliseconds create_backoff{75};
     while (running_.load()) {
         SecurityDescriptor security{};
         if (!current_user_only(security)) {
             running_.store(false);
             break;
         }
+        // FILE_FLAG_FIRST_PIPE_INSTANCE claims the name exclusively: a second
+        // creator (duplicate source settings, second OBS instance) fails loudly
+        // with ERROR_ACCESS_DENIED instead of silently coexisting.
         const HANDLE handle = CreateNamedPipeW(
             pipe_name_.c_str(),
-            PIPE_ACCESS_OUTBOUND,
+            PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             1024U * 1024U,
@@ -144,19 +159,50 @@ void NamedPipeSink::run() noexcept
             &security.attributes);
         if (handle == INVALID_HANDLE_VALUE) {
             if (running_.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(75));
+                create_error_.store(GetLastError());
+                // Exponential backoff: 75ms..800ms. A squatted name never
+                // recovers by spinning hot; a transient conflict recovers on the
+                // next attempt either way.
+                std::this_thread::sleep_for(create_backoff);
+                create_backoff = std::min<std::chrono::milliseconds>(create_backoff * 2, std::chrono::milliseconds{800});
             }
             continue;
         }
+        create_error_.store(0);
+        create_backoff = std::chrono::milliseconds{75};
         pipe_.store(handle);
+        if (!running_.load()) {
+            // stop() may have exchanged nothing while this handle was being
+            // created; fall through to the shared cleanup below instead of
+            // blocking in ConnectNamedPipe forever.
+            client_connected_.store(false);
+            void *expected = handle;
+            if (pipe_.compare_exchange_strong(expected, nullptr)) {
+                DisconnectNamedPipe(handle);
+                CloseHandle(handle);
+            }
+            break;
+        }
         const bool connected = ConnectNamedPipe(handle, nullptr) != FALSE || GetLastError() == ERROR_PIPE_CONNECTED;
         client_connected_.store(connected);
+        bool pipe_broken = false;
         if (connected) {
-            bool pipe_broken = false;
             while (running_.load()) {
-                auto packet = queue_.wait_pop();
+                auto packet = queue_.wait_pop_for(std::chrono::milliseconds{250});
                 if (!packet) {
-                    break;
+                    if (!running_.load()) {
+                        break;
+                    }
+                    // Idle window. The client can disconnect while no writes are
+                    // in flight, which WriteFile would never observe; probe so
+                    // client_connected_ stays truthful and stale media is flushed.
+                    DWORD dummy = 0;
+                    if (PeekNamedPipe(handle, nullptr, 0, nullptr, &dummy, nullptr) == FALSE &&
+                        GetLastError() == ERROR_BROKEN_PIPE) {
+                        pipe_broken = true;
+                        break;
+                    }
+                    continue;
                 }
                 std::size_t offset = 0;
                 while (running_.load() && offset < packet->size()) {
@@ -176,12 +222,18 @@ void NamedPipeSink::run() noexcept
                 }
                 SecureZeroMemory(packet->data(), packet->size());
                 if (pipe_broken) {
-                    client_connected_.store(false);
-                    queue_.clear();
-                    restart_transport_.store(true);
                     break;
                 }
             }
+        }
+        if (pipe_broken) {
+            // The decoder pipe disappeared while media was live. Flush stale
+            // media and reject one TS group so SrtListener tears down the peer;
+            // the sender then reconnects with a fresh keyframe and transport
+            // tables instead of feeding a new decoder mid-GOP.
+            client_connected_.store(false);
+            queue_.clear();
+            restart_transport_.store(true);
         }
         client_connected_.store(false);
         void *expected = handle;

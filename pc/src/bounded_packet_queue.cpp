@@ -32,6 +32,21 @@ std::optional<std::vector<std::uint8_t>> BoundedPacketQueue::wait_pop()
     return packet;
 }
 
+std::optional<std::vector<std::uint8_t>> BoundedPacketQueue::wait_pop_for(const std::chrono::milliseconds timeout)
+{
+    std::unique_lock lock(mutex_);
+    if (!condition_.wait_for(lock, timeout, [this] { return cancelled_ || !packets_.empty(); })) {
+        return std::nullopt;
+    }
+    if (packets_.empty()) {
+        return std::nullopt;
+    }
+    auto packet = std::move(packets_.front());
+    packets_.pop_front();
+    bytes_ -= packet.size();
+    return packet;
+}
+
 void BoundedPacketQueue::clear() noexcept
 {
     std::scoped_lock lock(mutex_);
