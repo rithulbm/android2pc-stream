@@ -65,3 +65,10 @@ mobile/app/src/main/cpp/third_party/srt/testing/
 mobile/app/src/main/cpp/third_party/srt/docs/
 mobile/app/src/main/cpp/third_party/srt/examples/
 mobile/app/src/main/cpp/third_party/srt/apps/
+
+# Local investigation scratch (never committed)
+investigation-gemini/
+
+# Local artifact staging (CI recreates these)
+.release/
+artifacts/

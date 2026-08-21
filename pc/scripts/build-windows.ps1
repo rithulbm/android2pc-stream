@@ -94,9 +94,13 @@ function Invoke-CleanProcess {
         }
     }
     $startInfo.Environment['PATH'] = $env:PATH
-    foreach ($argument in $ArgumentList) {
-        $startInfo.ArgumentList.Add($argument)
-    }
+    # ProcessStartInfo.ArgumentList requires .NET Core (pwsh). Build a quoted
+    # argument string instead so the script also runs under Windows PowerShell 5.1.
+    $quotedArguments = ($ArgumentList | ForEach-Object {
+        $escaped = ($_ -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1'
+        if ($_ -match '[\s"]') { "`"$escaped`"" } else { $_ }
+    }) -join ' '
+    $startInfo.Arguments = $quotedArguments
 
     $process = [Diagnostics.Process]::Start($startInfo)
     if ($null -eq $process) {
