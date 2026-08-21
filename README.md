@@ -27,8 +27,8 @@ older CLI remains reproducible even after newer root builds are published.
 
 | Platform | Download | SHA-256 |
 |---|---|---|
-| Android | [LocalCameraSender.apk](./LocalCameraSender.apk) | `902483A67E7E62C4F1AAC2F8D1DA24B806AF68B1C87158666B2CE6CB9ACB81EB` |
-| Windows / OBS | [LocalCameraReceiverSetup.exe](./LocalCameraReceiverSetup.exe) | `AEA54D8DBED17D6CFDCED288A6C769A9C0C4054F71E17137C3A5666FFBFD1649` |
+| Android | [LocalCameraSender.apk](./LocalCameraSender.apk) | `089BEA41E6E3C83954FBF2206B9A7407C9CC18542EBD2855EF5D85BD9A981360` |
+| Windows / OBS | [LocalCameraReceiverSetup.exe](./LocalCameraReceiverSetup.exe) | `C29468682DEDEBAEECED4ABAF5B9ED890D76B620816037641F577572F76D85A4` |
 
 The APK is signed with the repository's stable, development-only CI certificate;
 it is not a production trust identity. The Windows installer is not Authenticode
